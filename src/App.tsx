@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Sparkles, Search, Network, Settings, FolderArchive, Video, AlertTriangle, Table2, Share2 } from 'lucide-react';
+import { Sparkles, Search, Network, Settings, FolderArchive, Video, AlertTriangle, Table2, Share2, Route } from 'lucide-react';
 import { UserProfile, SecurityNode, ViewTab, WatchlistItem, CaseRecord, EntitySummary, SystemStatus } from './types';
 import { TopNav } from './components/TopNav';
 import { SIEMAlertBanner } from './components/SIEMAlertBanner';
 import { TemporalGraphCanvas } from './components/TemporalGraphCanvas';
+import { AttackPathCanvas } from './components/AttackPathCanvas';
 import { TimeScrubber } from './components/TimeScrubber';
 import { NodeDetailDrawer } from './components/NodeDetailDrawer';
 import { TimelineLogTable } from './components/TimelineLogTable';
@@ -60,7 +61,15 @@ export default function App() {
   const [activeCaseId, setActiveCaseId] = useState<string | null>(null);
 
   // Investigation view: graph canvas or event table
-  const [investigationView, setInvestigationView] = useState<'graph' | 'timeline'>('graph');
+  type InvestigationView = 'path' | 'graph' | 'timeline';
+  const [investigationView, setInvestigationView] = useState<InvestigationView>(() => {
+    try { const v = localStorage.getItem('watchme-view'); return v === 'graph' || v === 'timeline' ? v : 'path'; } catch { return 'path'; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('watchme-view', investigationView); } catch { /* storage unavailable */ }
+  }, [investigationView]);
+  // The timeline is a table; replays and citation jumps use the last picture view (path by default)
+  const pictureView: 'path' | 'graph' = investigationView === 'graph' ? 'graph' : 'path';
   const [timelineNodeFilter, setTimelineNodeFilter] = useState<string | null>(null);
 
   // Time scrubber & replay
@@ -286,7 +295,7 @@ export default function App() {
       return;
     }
     setActiveTab('investigation');
-    setInvestigationView('graph');
+    setInvestigationView(pictureView);
     setIsPlaying(false);
     setRecordedVideo(null);
 
@@ -444,7 +453,7 @@ export default function App() {
     return src && tgt && src.firstSeenHour >= currentHour && tgt.firstSeenHour >= currentHour && e.hour >= currentHour;
   });
 
-  const tabButton = (view: 'graph' | 'timeline', label: string, Icon: typeof Network) => (
+  const tabButton = (view: InvestigationView, label: string, Icon: typeof Network) => (
     <button
       onClick={() => setInvestigationView(view)}
       className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-mono transition-colors ${
@@ -484,7 +493,7 @@ export default function App() {
         onRefresh={graphSource.kind === 'live' ? reloadGraph : undefined}
         onQuickReplay={() => {
           setActiveTab('investigation');
-          setInvestigationView('graph');
+          setInvestigationView(pictureView);
           setCurrentHour(windowHours);
           setIsPlaying(true);
         }}
@@ -521,7 +530,8 @@ export default function App() {
         {activeTab === 'investigation' && (
           <div className="flex-1 flex flex-col h-full relative overflow-hidden">
             <div className="flex items-center gap-1 px-3 py-1.5 bg-slate-900 border-b border-slate-800">
-              {tabButton('graph', 'Graph', Share2)}
+              {tabButton('path', 'Attack Path', Route)}
+              {tabButton('graph', 'Relationship Graph', Share2)}
               {tabButton('timeline', `Event Timeline (${userProfile.edges.length})`, Table2)}
               {timelineNodeFilter && investigationView === 'timeline' && (
                 <button onClick={() => setTimelineNodeFilter(null)} className="ml-2 px-2 py-0.5 rounded bg-slate-800 text-[11px] font-mono text-cyan-300">
@@ -531,7 +541,21 @@ export default function App() {
               {loading && <span className="ml-auto text-[11px] font-mono text-slate-400">Refreshing...</span>}
             </div>
             <div className="flex-1 relative overflow-hidden">
-              {investigationView === 'graph' ? (
+              {investigationView === 'path' ? (
+                <AttackPathCanvas
+                  profile={userProfile}
+                  currentHour={currentHour}
+                  windowHours={windowHours}
+                  onSelectNode={setSelectedNode}
+                  selectedNodeId={selectedNode?.id || null}
+                  highlightedCitationId={highlightedCitationId}
+                  canvasRefCallback={handleCanvasRef}
+                  isRecording={isRecording}
+                  recordingWatermarkText={replaySettings.titleText || `CASE ${userProfile.id} // ${userProfile.username}`}
+                  redactNames={replaySettings.redact}
+                  theme={isDarkMode ? 'dark' : 'light'}
+                />
+              ) : investigationView === 'graph' ? (
                 <TemporalGraphCanvas
                   nodes={userProfile.nodes}
                   edges={userProfile.edges}
@@ -559,13 +583,13 @@ export default function App() {
                   currentHour={currentHour}
                   onJumpToHour={h => {
                     setCurrentHour(h);
-                    setInvestigationView('graph');
+                    setInvestigationView(pictureView);
                   }}
                   onSelectNode={setSelectedNode}
                 />
               )}
 
-              {investigationView === 'graph' && (
+              {investigationView !== 'timeline' && (
                 <button
                   onClick={() => setDossierOpen(true)}
                   className={`absolute bottom-16 ${selectedNode ? 'right-[26rem]' : 'right-4'} z-20 flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 font-bold rounded-xl shadow-sm text-xs font-mono transition-all`}
@@ -674,7 +698,7 @@ export default function App() {
               onCitationClick={citId => {
                 setHighlightedCitationId(citId);
                 setDossierOpen(false);
-                setInvestigationView('graph');
+                setInvestigationView(pictureView);
                 const edge = userProfile.edges.find(e => e.id === citId);
                 if (edge) setCurrentHour(edge.hour);
                 const node = userProfile.nodes.find(n => n.id === citId);

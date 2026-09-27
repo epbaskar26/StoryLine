@@ -70,6 +70,8 @@ export interface SecurityEdge {
   ttp?: string[];
   eventIds?: string[];
   rawSourceLink?: string;
+  // Separate visits on this edge (events more than 30 min apart); absent for demo data (one visit at firstSeen)
+  visits?: { start: string; end: string; count: number; status?: 'critical' | 'anomalous'; ttp?: string[] }[];
 }
 
 export interface SecurityMilestone {

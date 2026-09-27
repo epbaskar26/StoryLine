@@ -52,6 +52,28 @@ const LOGON_TYPES: Record<string, string> = {
 };
 
 const HOUR_MS = 3_600_000;
+const VISIT_GAP_MS = 30 * 60_000; // a new visit starts after 30 minutes without activity on the same edge
+
+type VisitOut = { start: string; end: string; count: number; status?: 'critical' | 'anomalous'; ttp?: string[] };
+
+// Group an edge's events into separate visits (used by the Attack Path view to show revisits).
+// Each visit gets the severity and techniques of the indicators whose events fall inside it, so a normal
+// login and a later malicious login on the same edge are coloured differently.
+function splitVisits(edgeKey: string, samples: [number, string][], eventRisk: Map<string, { severity: 'critical' | 'anomalous'; ttp: string }>): VisitOut[] {
+  const sorted = [...samples].sort((a, b) => a[0] - b[0]);
+  const visits: { start: number; end: number; count: number; ids: string[] }[] = [];
+  for (const [t, id] of sorted) {
+    const last = visits[visits.length - 1];
+    if (last && t - last.end <= VISIT_GAP_MS) { last.end = t; last.count++; last.ids.push(id); }
+    else visits.push({ start: t, end: t, count: 1, ids: [id] });
+  }
+  return visits.slice(0, 20).map(v => {
+    const risks = v.ids.map(id => eventRisk.get(`${edgeKey}|${id}`)).filter((r): r is { severity: 'critical' | 'anomalous'; ttp: string } => !!r);
+    const status = risks.some(r => r.severity === 'critical') ? 'critical' : risks.length ? 'anomalous' : undefined;
+    const ttp = Array.from(new Set(risks.map(r => r.ttp).filter(t => /^T\d/.test(t))));
+    return { start: new Date(v.start).toISOString(), end: new Date(v.end).toISOString(), count: v.count, status, ttp: ttp.length ? ttp : undefined };
+  });
+}
 
 // Opaque ids: a hash, not the entity name, so ids can be shown to the LLM as citations without leaking names.
 export function opaqueId(type: NodeType, key: string): string {
@@ -98,6 +120,7 @@ export function buildProfile(input: BuildInput): UserProfile {
       edges.set(key, e);
     }
     e.count++;
+    if ((e.samples ||= []).length < 2000) e.samples.push([ev.tsMs, ev.id]);
     e.firstMs = Math.min(e.firstMs, ev.tsMs);
     e.lastMs = Math.max(e.lastMs, ev.tsMs);
     e.bytesOut += bytes;
@@ -203,6 +226,19 @@ export function buildProfile(input: BuildInput): UserProfile {
   const vip = input.vipEntities.some(v => v.toLowerCase().split('@')[0] === username.toLowerCase());
   const { score, band } = scoreEntity(indicators, { vip, privileged: privilegedGroups.size > 0 });
 
+  // Which events fired which indicator (for per-visit colouring in the Attack Path view)
+  const eventRisk = new Map<string, { severity: 'critical' | 'anomalous'; ttp: string }>();
+  // keyed by edge + event, and only for the edges the indicator applies to
+  for (const ind of indicators) {
+    for (const edgeKey of ind.edgeKeys) {
+      for (const id of ind.eventIds) {
+        const k = `${edgeKey}|${id}`;
+        const prev = eventRisk.get(k);
+        if (!prev || (ind.severity === 'critical' && prev.severity !== 'critical')) eventRisk.set(k, { severity: ind.severity, ttp: ind.mitreTactic });
+      }
+    }
+  }
+
   const edgeSeverity = new Map<string, 'critical' | 'anomalous'>();
   const edgeTtps = new Map<string, Set<string>>();
   for (const ind of indicators) {
@@ -268,6 +304,7 @@ export function buildProfile(input: BuildInput): UserProfile {
       firstSeenInBaseline: e.firstSeenInBaseline,
       ttp: Array.from(edgeTtps.get(e.key) || []),
       eventIds: e.eventIds,
+      visits: splitVisits(e.key, e.samples || [[e.firstMs, '']], eventRisk),
     };
   });
 

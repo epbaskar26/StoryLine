@@ -1,3 +1,12 @@
+# Changes in 0.4.0
+
+- New default view: **Attack Path**, a linear, time-ordered view of the investigation. It starts at the user and the first login, then shows each step (entity reached) left to right, wrapping into rows like text. The cluster view is still available as **Relationship Graph**.
+- **Revisits:** when the path returns to an entity it already reached, the step is drawn as a normal node with a `↺ REVISIT ×n` tag and a note such as "Back after 14h · first seen T-46:00".
+- Routine steps (low-risk, seen before) are collapsed into "+N routine" chips; click a chip or tick "Show routine steps" to expand them.
+- Each step shows its ATT&CK tactic and technique, event count, and time (offset and UTC). A dashed connector means the entity was first seen (not in the baseline).
+- Risk is now tracked per visit: the backend splits each edge into visits (a new visit after 30 minutes without activity) and colours each visit only by the indicator events inside it, so a normal login is not shown as critical because a later login on the same host was.
+- The time scrubber and replay recording work in the Attack Path view (the path grows step by step and the view follows the newest step).
+
 # Changes in 0.3.0
 
 - New light theme based on the reference design: Inter font; royal blue #2740CB primary and #3140CB links; #F6F8FA page, white cards, #EDEFF1 borders; risk colors orange #FBA21B, red #D75054, teal #13A8B1, purple #843CF3. It is the default. The moon/sun button switches to the original dark theme, and the choice is remembered.

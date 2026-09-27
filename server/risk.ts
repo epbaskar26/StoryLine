@@ -16,6 +16,7 @@ export interface EdgeDraft {
   bytesOut: number;
   firstSeenInBaseline?: boolean;
   meta: Record<string, Set<string>>;
+  samples?: [number, string][]; // [timestamp, event id] (capped), used to split the edge into separate visits
 }
 
 export interface Indicator {
