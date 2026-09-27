@@ -48,7 +48,9 @@ export default function App() {
   const [timeToContextMs, setTimeToContextMs] = useState<number | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
-  const [isDarkMode, setIsDarkMode] = useState<boolean>(true);
+  const [isDarkMode, setIsDarkMode] = useState<boolean>(() => {
+    try { return localStorage.getItem('watchme-theme') === 'dark'; } catch { return false; }
+  });
   const [globalSearchOpen, setGlobalSearchOpen] = useState<boolean>(false);
   const [globalSearchTerm, setGlobalSearchTerm] = useState<string>('');
   const [dossierOpen, setDossierOpen] = useState(false);
@@ -84,8 +86,11 @@ export default function App() {
   const windowDays = graphSource.kind === 'live' ? graphSource.windowDays : Math.round(windowHours / 24);
   const t0Param = graphSource.kind === 'live' ? graphSource.t0 : userProfile?.t0 || '';
 
+  // `dark` stays on so the components' dark: variants apply; `theme-dark` picks the palette (see index.css)
   useEffect(() => {
-    document.documentElement.classList.toggle('dark', isDarkMode);
+    document.documentElement.classList.add('dark');
+    document.documentElement.classList.toggle('theme-dark', isDarkMode);
+    try { localStorage.setItem('watchme-theme', isDarkMode ? 'dark' : 'light'); } catch { /* storage unavailable */ }
   }, [isDarkMode]);
 
   useEffect(() => {
@@ -540,6 +545,7 @@ export default function App() {
                   isRecording={isRecording}
                   recordingWatermarkText={replaySettings.titleText || `CASE ${userProfile.id} // ${userProfile.username}`}
                   redactNames={replaySettings.redact}
+                  theme={isDarkMode ? 'dark' : 'light'}
                   truncated={userProfile.truncated}
                   totalNodeCount={userProfile.totalNodeCount}
                   totalEdgeCount={userProfile.totalEdgeCount}
@@ -562,7 +568,7 @@ export default function App() {
               {investigationView === 'graph' && (
                 <button
                   onClick={() => setDossierOpen(true)}
-                  className={`absolute bottom-16 ${selectedNode ? 'right-[26rem]' : 'right-4'} z-20 flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 font-bold rounded-xl shadow-[0_0_20px_rgba(6,182,212,0.5)] text-xs font-mono transition-all`}
+                  className={`absolute bottom-16 ${selectedNode ? 'right-[26rem]' : 'right-4'} z-20 flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 font-bold rounded-xl shadow-sm text-xs font-mono transition-all`}
                 >
                   <Sparkles className="w-4 h-4" />
                   <span>AI Case Summary</span>

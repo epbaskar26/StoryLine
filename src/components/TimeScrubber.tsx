@@ -178,7 +178,7 @@ export const TimeScrubber: React.FC<Props> = ({
               <div
                 className={`w-full rounded-t-[1px] transition-all ${
                   isCurrent 
-                    ? 'bg-cyan-400 shadow-[0_0_8px_rgba(6,182,212,0.8)]' 
+                    ? 'bg-cyan-400 shadow-sm' 
                     : bar.sev === 'critical'
                     ? isPastOrCurrent ? 'bg-red-500' : 'bg-red-950'
                     : bar.sev === 'high'
@@ -213,7 +213,7 @@ export const TimeScrubber: React.FC<Props> = ({
                 <div 
                   className={`w-2 h-2 rounded-sm transition-all ${
                     m.severity === 'critical'
-                      ? isPassed ? 'bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.8)]' : 'bg-red-950 border border-red-500'
+                      ? isPassed ? 'bg-red-500 shadow-sm' : 'bg-red-950 border border-red-500'
                       : isPassed ? 'bg-amber-400' : 'bg-slate-700'
                   } group-hover:scale-125`}
                 />
@@ -272,7 +272,7 @@ export const TimeScrubber: React.FC<Props> = ({
             className={`flex items-center gap-2 px-3 py-1.5 rounded-md font-mono text-xs font-semibold transition-all ${
               isPlaying
                 ? 'bg-amber-500/20 text-amber-300 border border-amber-500/50 hover:bg-amber-500/30'
-                : 'bg-cyan-500 text-slate-950 hover:bg-cyan-400 shadow-[0_0_12px_rgba(6,182,212,0.4)]'
+                : 'bg-cyan-500 text-slate-950 hover:bg-cyan-400 shadow-sm'
             }`}
           >
             {isPlaying ? (

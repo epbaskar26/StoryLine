@@ -136,7 +136,7 @@ export const AICaseDossier: React.FC<Props> = ({
           <button
             onClick={handleGenerateSummary}
             disabled={loading}
-            className="flex items-center gap-2 px-4 py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-semibold rounded-lg text-xs transition-all shadow-[0_0_15px_rgba(6,182,212,0.4)] disabled:opacity-50"
+            className="flex items-center gap-2 px-4 py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-semibold rounded-lg text-xs transition-all shadow-sm disabled:opacity-50"
           >
             {loading ? (
               <>
@@ -311,7 +311,7 @@ export const AICaseDossier: React.FC<Props> = ({
                 <button
                   onClick={handleGenerateSummary}
                   disabled={loading}
-                  className="px-4 py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-semibold text-xs rounded-lg transition-all shadow-[0_0_12px_rgba(6,182,212,0.4)]"
+                  className="px-4 py-2 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-semibold text-xs rounded-lg transition-all shadow-sm"
                 >
                   Generate AI Case Summary Now
                 </button>

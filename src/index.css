@@ -1,52 +1,167 @@
 @import "tailwindcss";
 
-@layer base {
-  :root {
-    --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    --font-mono: 'JetBrains Mono', monospace;
-  }
+/* The UI is authored with `dark:` variants. The `dark` class is always set on <html>;
+   the light (default) and dark looks are chosen by the palette below, via `.theme-dark`. */
+@custom-variant dark (&:where(.dark, .dark *));
 
+@theme {
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  /* Labels use the UI font too (the reference design has no monospace labels); code stays monospace below */
+  --font-mono: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+/* ------------------------------------------------------------------------------------------
+   Light theme (default) - palette sampled from the reference design
+     primary #2740CB · link #3140CB · page #F6F8FA · card #FFFFFF · border #EDEFF1
+     text #121314 / #1F201F · label #888A8C · orange #FBA21B · red #D75054 · teal #13A8B1
+     purple #843CF3 · pink #C80B92 · green #018102
+   Components were written for a dark UI, so each scale is mapped in reverse lightness order:
+   "900/950" surfaces become white/page backgrounds and "100-300" text becomes dark text.
+   ------------------------------------------------------------------------------------------ */
+:root:not(.theme-dark) {
+  /* Neutrals */
+  --color-slate-950: #F6F8FA; /* page and inset wells */
+  --color-slate-900: #FFFFFF; /* cards, panels, header */
+  --color-slate-800: #EDEFF1; /* borders, dividers, hover, secondary buttons */
+  --color-slate-700: #DDE0E4; /* stronger borders */
+  --color-slate-600: #A9ACB1;
+  --color-slate-500: #888A8C; /* labels */
+  --color-slate-400: #74767A; /* secondary text */
+  --color-slate-300: #3A3B3E; /* body text */
+  --color-slate-200: #1F201F; /* values */
+  --color-slate-100: #121314; /* headings */
+  --color-slate-50: #0B0C0D;
+
+  /* Primary (the UI's "cyan" accent becomes the reference royal blue) */
+  --color-cyan-950: #EEF1FD;
+  --color-cyan-900: #E3E7FB;
+  --color-cyan-800: #C9D0F5;
+  --color-cyan-700: #1F34A8;
+  --color-cyan-600: #2740CB; /* primary buttons */
+  --color-cyan-500: #3450DA; /* primary hover / accents */
+  --color-cyan-400: #2740CB; /* accent text and icons */
+  --color-cyan-300: #3140CB; /* links */
+  --color-cyan-200: #BCC6F3;
+  --color-cyan-100: #DEE3FA;
+  --color-cyan-50: #EEF1FD;
+
+  --color-blue-950: #EEF1FD;
+  --color-blue-900: #E3E7FB;
+  --color-blue-700: #1F34A8;
+  --color-blue-600: #2740CB;
+  --color-blue-500: #3450DA;
+  --color-blue-400: #3140CB;
+  --color-blue-200: #BCC6F3;
+  --color-blue-50: #EEF1FD;
+
+  --color-sky-500: #3140CB;
+  --color-sky-300: #3140CB;
+
+  --color-indigo-600: #1931AE;
+  --color-indigo-400: #5431A1;
+
+  /* Red */
+  --color-red-950: #FDF1F1;
+  --color-red-900: #FBE3E4;
+  --color-red-800: #F2C3C5;
+  --color-red-700: #A5363A;
+  --color-red-600: #C9454A;
+  --color-red-500: #D75054;
+  --color-red-400: #C2454A;
+  --color-red-300: #A5363A;
+  --color-red-200: #8E2C30;
+  --color-red-100: #FBE3E4;
+  --color-red-50: #FDF1F1;
+
+  /* Orange (the UI's "amber") */
+  --color-amber-950: #FFF6E8;
+  --color-amber-900: #FFEDD1;
+  --color-amber-800: #F7D39A;
+  --color-amber-700: #A86300;
+  --color-amber-600: #D98A0A;
+  --color-amber-500: #FBA21B;
+  --color-amber-400: #C47C00;
+  --color-amber-300: #A86300;
+  --color-amber-200: #8A5200;
+  --color-amber-50: #FFF6E8;
+
+  /* Green */
+  --color-emerald-950: #EEF8EF;
+  --color-emerald-800: #B7E0BC;
+  --color-emerald-700: #016A02;
+  --color-emerald-600: #018102;
+  --color-emerald-500: #2E9E43;
+  --color-emerald-400: #018102;
+  --color-emerald-300: #016A02;
+  --color-emerald-200: #015A02;
+  --color-emerald-50: #EEF8EF;
+
+  /* Purple */
+  --color-purple-950: #F5EEFE;
+  --color-purple-800: #D6BCFB;
+  --color-purple-600: #7633E0;
+  --color-purple-500: #843CF3;
+  --color-purple-400: #7633E0;
+  --color-purple-300: #6A2BC9;
+
+  /* Pink (badges) */
+  --color-pink-600: #C80B92;
+  --color-pink-400: #C80B92;
+
+  color-scheme: light;
+}
+
+:root.theme-dark {
+  color-scheme: dark;
+}
+
+@layer base {
   body {
     font-family: var(--font-sans);
+    font-feature-settings: 'cv11', 'ss01';
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+    letter-spacing: -0.005em;
+  }
+
+  /* Code, queries and hashes stay monospace */
+  pre, code, textarea, kbd {
+    font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+
+  /* Numbers line up in tables and counters */
+  .tabular-nums, table {
+    font-variant-numeric: tabular-nums;
+  }
+
+  :root:not(.theme-dark) ::selection {
+    background: #DEE3FA;
+    color: #121314;
   }
 }
 
-/* Polished dot grid canvas background matching Vocalyn UI */
-.flow-canvas-grid-light {
-  background-color: #FAFAFA;
-  background-image: radial-gradient(#D4D4D8 1.1px, transparent 1.1px);
-  background-size: 20px 20px;
+/* Canvas background: plain page color with a faint dot grid */
+.soc-grid-bg {
+  background-color: var(--color-slate-950);
+  background-image: radial-gradient(var(--color-slate-800) 1px, transparent 1px);
+  background-size: 22px 22px;
 }
 
-.flow-canvas-grid-dark {
-  background-color: #090D16;
-  background-image: radial-gradient(#27272A 1.1px, transparent 1.1px);
-  background-size: 20px 20px;
-}
-
-/* Refined crisp box shadows matching modern SaaS cards */
-.vocalyn-card-shadow {
-  box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.04), 0 1px 2px -1px rgba(0, 0, 0, 0.02);
-}
-
-.vocalyn-elevated-shadow {
-  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.05), 0 8px 10px -6px rgba(0, 0, 0, 0.03);
+/* Light theme: flat cards like the reference (subtle border, soft shadow, no glows) */
+:root:not(.theme-dark) .rounded-xl.border,
+:root:not(.theme-dark) .rounded-2xl.border {
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
 }
 
 /* Custom scrollbars */
 ::-webkit-scrollbar {
-  width: 5px;
-  height: 5px;
+  width: 6px;
+  height: 6px;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #E4E4E7;
+  background: var(--color-slate-700);
   border-radius: 4px;
-}
-.dark ::-webkit-scrollbar-thumb {
-  background: #27272A;
 }

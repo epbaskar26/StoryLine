@@ -105,7 +105,7 @@ export const ReplayVideoStudio: React.FC<Props> = ({
             <button
               onClick={onStartRecording}
               disabled={!recordingMime}
-              className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-500 text-white rounded-lg text-xs font-semibold shadow-[0_0_15px_rgba(239,68,68,0.5)] transition-all disabled:opacity-40"
+              className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-500 text-white rounded-lg text-xs font-semibold shadow-sm transition-all disabled:opacity-40"
             >
               <Video className="w-4 h-4" />
               <span>Record {settings.durationSecs}s Replay ({formatLabel})</span>
@@ -193,7 +193,7 @@ export const ReplayVideoStudio: React.FC<Props> = ({
                   <a
                     href={recordedVideo.url}
                     download={recordedVideo.fileName}
-                    className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold transition-colors shadow-md"
+                    className="flex items-center gap-2 px-4 py-2 bg-cyan-600 hover:bg-cyan-500 text-white rounded-lg text-xs font-semibold transition-colors shadow-sm"
                   >
                     <Download className="w-4 h-4" />
                     <span>Download .{recordedVideo.fileName.split('.').pop()}</span>

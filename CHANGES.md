@@ -1,3 +1,9 @@
+# Changes in 0.3.0
+
+- New light theme based on the reference design: Inter font; royal blue #2740CB primary and #3140CB links; #F6F8FA page, white cards, #EDEFF1 borders; risk colors orange #FBA21B, red #D75054, teal #13A8B1, purple #843CF3. It is the default. The moon/sun button switches to the original dark theme, and the choice is remembered.
+- Flat styling: neon glows removed, the graph canvas uses the new palette, nav labels no longer wrap, and the Download button is primary blue.
+- Code, queries and hashes stay monospace (JetBrains Mono).
+
 # Changes in 0.2.0
 
 ## Broken features fixed

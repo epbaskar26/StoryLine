@@ -17,6 +17,49 @@ import {
   ChevronDown
 } from 'lucide-react';
 
+// Canvas colors per theme. Light values are from the reference design
+// (red #D75054, orange #FBA21B, teal #13A8B1, purple #843CF3, blue #2740CB).
+const CANVAS_PALETTES = {
+  light: {
+    recordingBg: '#FFFFFF',
+    particle: '#3140CB', particleThreat: '#D75054',
+    compromised: { fill: '#D75054', stroke: '#B8383C', glow: 'rgba(215, 80, 84, 0.30)' },
+    crown: { fill: '#843CF3', stroke: '#6A2BC9', glow: 'rgba(132, 60, 243, 0.25)' },
+    high: { fill: '#D75054', stroke: '#B8383C', glow: 'rgba(215, 80, 84, 0.25)' },
+    medium: { fill: '#FBA21B', stroke: '#D98A0A', glow: 'rgba(251, 162, 27, 0.25)' },
+    low: { fill: '#13A8B1', stroke: '#0E8A92', glow: 'rgba(19, 168, 177, 0.20)' },
+    halo: ['rgba(215, 80, 84, 0.12)', 'rgba(215, 80, 84, 0.04)', 'rgba(215, 80, 84, 0)'],
+    haloStroke: 'rgba(215, 80, 84, 0.30)',
+    edgeCitation: '#2740CB', edgeCritical: '#D75054', edgeCriticalGlow: 'rgba(215, 80, 84, 0.25)',
+    edgeAnomalous: '#FBA21B', edgeAnomalousGlow: 'rgba(251, 162, 27, 0.25)', edgeBlocked: '#A9ACB1', edgeNormal: '#C9CDD3',
+    labelCitation: '#2740CB', labelCritical: '#C2454A', labelAnomalous: '#B06A00', labelNormal: '#74767A', edgeMeta: '#A9ACB1',
+    ringSelected: '#2740CB', ringHover: '#A9ACB1',
+    icon: '#FFFFFF', crownBadge: '#843CF3',
+    nodeLabel: '#1F201F', nodeLabelHighRisk: '#A5363A', subLabel: '#888A8C',
+    badge: '#D75054', badgeStroke: '#FFFFFF',
+    overlayBg: 'rgba(255, 255, 255, 0.96)', overlayBorder: '#2740CB', overlayRec: '#D75054', overlayText: '#121314', overlayClock: '#2740CB', overlayWarn: '#B06A00',
+  },
+  dark: {
+    recordingBg: '#020617',
+    particle: '#38bdf8', particleThreat: '#ef4444',
+    compromised: { fill: '#ef4444', stroke: '#f87171', glow: 'rgba(239, 68, 68, 0.6)' },
+    crown: { fill: '#9333ea', stroke: '#c084fc', glow: 'rgba(192, 132, 252, 0.6)' },
+    high: { fill: '#b91c1c', stroke: '#f87171', glow: 'rgba(239, 68, 68, 0.4)' },
+    medium: { fill: '#d97706', stroke: '#fbbf24', glow: 'rgba(251, 191, 36, 0.4)' },
+    low: { fill: '#0f766e', stroke: '#2dd4bf', glow: 'rgba(45, 212, 191, 0.3)' },
+    halo: ['rgba(239, 68, 68, 0.25)', 'rgba(239, 68, 68, 0.08)', 'rgba(239, 68, 68, 0)'],
+    haloStroke: 'rgba(239, 68, 68, 0.4)',
+    edgeCitation: '#38bdf8', edgeCritical: '#ef4444', edgeCriticalGlow: 'rgba(239, 68, 68, 0.8)',
+    edgeAnomalous: '#f59e0b', edgeAnomalousGlow: 'rgba(245, 158, 11, 0.6)', edgeBlocked: '#64748b', edgeNormal: '#1e293b',
+    labelCitation: '#38bdf8', labelCritical: '#fca5a5', labelAnomalous: '#fde047', labelNormal: '#94a3b8', edgeMeta: '#64748b',
+    ringSelected: '#38bdf8', ringHover: '#e2e8f0',
+    icon: '#ffffff', crownBadge: '#fde047',
+    nodeLabel: '#f8fafc', nodeLabelHighRisk: '#fca5a5', subLabel: '#94a3b8',
+    badge: '#ef4444', badgeStroke: '#020617',
+    overlayBg: 'rgba(2, 6, 23, 0.9)', overlayBorder: '#ef4444', overlayRec: '#ef4444', overlayText: '#f8fafc', overlayClock: '#38bdf8', overlayWarn: '#fbbf24',
+  },
+};
+
 interface Props {
   nodes: SecurityNode[];
   edges: SecurityEdge[];
@@ -24,6 +67,7 @@ interface Props {
   windowHours?: number;
   t0?: string;
   redactNames?: boolean; // replace entity names with type tokens (for sharing replays more widely)
+  theme?: 'light' | 'dark';
   truncated?: boolean;
   totalNodeCount?: number;
   totalEdgeCount?: number;
@@ -64,6 +108,7 @@ export const TemporalGraphCanvas: React.FC<Props> = ({
   windowHours = 48,
   t0,
   redactNames = false,
+  theme = 'light',
   truncated = false,
   totalNodeCount,
   totalEdgeCount,
@@ -78,6 +123,7 @@ export const TemporalGraphCanvas: React.FC<Props> = ({
   onHideNode
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
+  const P = CANVAS_PALETTES[theme];
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   const [hoveredNode, setHoveredNode] = useState<SecurityNode | null>(null);
@@ -201,7 +247,7 @@ export const TemporalGraphCanvas: React.FC<Props> = ({
           edgeId: randomEdge.id,
           progress: 0,
           speed: 0.015 + Math.random() * 0.02,
-          color: isThreat ? '#ef4444' : '#38bdf8'
+          color: isThreat ? P.particleThreat : P.particle
         });
       }
     }, 160);
@@ -262,22 +308,19 @@ export const TemporalGraphCanvas: React.FC<Props> = ({
   // Node Color by Risk Band (Section 6 & 10 Extended Spec):
   // 0-39 Low (teal/emerald/slate), 40-69 Medium (amber), 70-100 High (crimson red)
   const getNodeColorByRiskBand = (riskBand: RiskBand, compromised: boolean, isCrownJewel?: boolean) => {
-    if (compromised) {
-      return { fill: '#ef4444', stroke: '#f87171', glow: 'rgba(239, 68, 68, 0.6)' };
-    }
-    if (isCrownJewel) {
-      return { fill: '#9333ea', stroke: '#c084fc', glow: 'rgba(192, 132, 252, 0.6)' };
-    }
+    if (compromised) return P.compromised;
+    if (isCrownJewel) return P.crown;
     switch (riskBand) {
       case 'HIGH':
-        return { fill: '#b91c1c', stroke: '#f87171', glow: 'rgba(239, 68, 68, 0.4)' };
+        return P.high;
       case 'MEDIUM':
-        return { fill: '#d97706', stroke: '#fbbf24', glow: 'rgba(251, 191, 36, 0.4)' };
+        return P.medium;
       case 'LOW':
       default:
-        return { fill: '#0f766e', stroke: '#2dd4bf', glow: 'rgba(45, 212, 191, 0.3)' };
+        return P.low;
     }
   };
+
 
   // Main Force Physics & Render Loop
   useEffect(() => {
@@ -396,7 +439,7 @@ export const TemporalGraphCanvas: React.FC<Props> = ({
       ctx.clearRect(0, 0, width, height);
       if (isRecording) {
         // The on-screen background is CSS, which captureStream does not see; paint one into the video
-        ctx.fillStyle = '#020617';
+        ctx.fillStyle = P.recordingBg;
         ctx.fillRect(0, 0, width, height);
       }
       ctx.save();
@@ -408,9 +451,9 @@ export const TemporalGraphCanvas: React.FC<Props> = ({
       compromisedNodes.forEach(cNode => {
         const haloRadius = cNode.radius * 2.8;
         const grad = ctx.createRadialGradient(cNode.x, cNode.y, cNode.radius * 0.5, cNode.x, cNode.y, haloRadius);
-        grad.addColorStop(0, 'rgba(239, 68, 68, 0.25)');
-        grad.addColorStop(0.7, 'rgba(239, 68, 68, 0.08)');
-        grad.addColorStop(1, 'rgba(239, 68, 68, 0)');
+        grad.addColorStop(0, P.halo[0]);
+        grad.addColorStop(0.7, P.halo[1]);
+        grad.addColorStop(1, P.halo[2]);
 
         ctx.beginPath();
         ctx.arc(cNode.x, cNode.y, haloRadius, 0, 2 * Math.PI);
@@ -420,7 +463,7 @@ export const TemporalGraphCanvas: React.FC<Props> = ({
         ctx.beginPath();
         ctx.arc(cNode.x, cNode.y, haloRadius, 0, 2 * Math.PI);
         ctx.setLineDash([4, 6]);
-        ctx.strokeStyle = 'rgba(239, 68, 68, 0.4)';
+        ctx.strokeStyle = P.haloStroke;
         ctx.lineWidth = 1;
         ctx.stroke();
         ctx.setLineDash([]);
@@ -453,26 +496,26 @@ export const TemporalGraphCanvas: React.FC<Props> = ({
         }
 
         if (isCitationMatch) {
-          ctx.strokeStyle = '#38bdf8';
+          ctx.strokeStyle = P.edgeCitation;
           ctx.lineWidth = lineThickness;
-          ctx.shadowColor = '#38bdf8';
+          ctx.shadowColor = P.edgeCitation;
           ctx.shadowBlur = 14;
         } else if (isCritical) {
-          ctx.strokeStyle = '#ef4444';
+          ctx.strokeStyle = P.edgeCritical;
           ctx.lineWidth = lineThickness;
-          ctx.shadowColor = 'rgba(239, 68, 68, 0.8)';
+          ctx.shadowColor = P.edgeCriticalGlow;
           ctx.shadowBlur = 8;
         } else if (isAnomalous) {
-          ctx.strokeStyle = '#f59e0b';
+          ctx.strokeStyle = P.edgeAnomalous;
           ctx.lineWidth = lineThickness;
-          ctx.shadowColor = 'rgba(245, 158, 11, 0.6)';
+          ctx.shadowColor = P.edgeAnomalousGlow;
           ctx.shadowBlur = 6;
         } else if (e.status === 'blocked') {
-          ctx.strokeStyle = '#64748b';
+          ctx.strokeStyle = P.edgeBlocked;
           ctx.lineWidth = lineThickness;
           ctx.shadowBlur = 0;
         } else {
-          ctx.strokeStyle = '#1e293b';
+          ctx.strokeStyle = P.edgeNormal;
           ctx.lineWidth = lineThickness;
           ctx.shadowBlur = 0;
         }
@@ -484,14 +527,14 @@ export const TemporalGraphCanvas: React.FC<Props> = ({
         // Draw Edge Label at midpoint
         const midX = (source.x + target.x) / 2;
         const midY = (source.y + target.y) / 2;
-        ctx.font = '10px "JetBrains Mono", monospace';
+        ctx.font = '10px Inter, sans-serif';
         ctx.textAlign = 'center';
-        ctx.fillStyle = isCitationMatch ? '#38bdf8' : isCritical ? '#fca5a5' : isAnomalous ? '#fde047' : '#94a3b8';
+        ctx.fillStyle = isCitationMatch ? P.labelCitation : isCritical ? P.labelCritical : isAnomalous ? P.labelAnomalous : P.labelNormal;
         ctx.fillText(e.action, midX, midY - 6);
 
         // Event count badge & protocol
-        ctx.font = '9px "JetBrains Mono", monospace';
-        ctx.fillStyle = '#64748b';
+        ctx.font = '9px Inter, sans-serif';
+        ctx.fillStyle = P.edgeMeta;
         ctx.fillText(`[${e.protocol} · ${e.eventCount} evt]`, midX, midY + 8);
       });
 
@@ -541,7 +584,7 @@ export const TemporalGraphCanvas: React.FC<Props> = ({
         if (isSelected || isHovered || isCitationMatch) {
           ctx.beginPath();
           drawNodeShape(ctx, n.type, n.x, n.y, n.radius + 7);
-          ctx.strokeStyle = isCitationMatch ? '#38bdf8' : isSelected ? '#38bdf8' : '#e2e8f0';
+          ctx.strokeStyle = isCitationMatch || isSelected ? P.ringSelected : P.ringHover;
           ctx.lineWidth = 2;
           ctx.setLineDash([3, 3]);
           ctx.stroke();
@@ -554,13 +597,13 @@ export const TemporalGraphCanvas: React.FC<Props> = ({
         ctx.strokeStyle = colors.stroke;
         ctx.lineWidth = n.compromised ? 3 : 2;
         ctx.shadowColor = colors.glow;
-        ctx.shadowBlur = n.compromised ? 16 : 8;
+        ctx.shadowBlur = theme === 'light' ? (n.compromised ? 10 : 4) : n.compromised ? 16 : 8;
         ctx.fill();
         ctx.stroke();
         ctx.shadowBlur = 0;
 
         // Inner Icon Representation
-        ctx.fillStyle = '#ffffff';
+        ctx.fillStyle = P.icon;
         ctx.font = `${Math.max(10, Math.floor(n.radius * 0.65))}px sans-serif`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
@@ -579,22 +622,22 @@ export const TemporalGraphCanvas: React.FC<Props> = ({
 
         // Crown Jewel Tag Badge
         if (n.isCrownJewel) {
-          ctx.font = 'bold 9px "JetBrains Mono", monospace';
-          ctx.fillStyle = '#fde047';
+          ctx.font = 'bold 9px Inter, sans-serif';
+          ctx.fillStyle = P.crownBadge;
           ctx.fillText('👑 CROWN JEWEL', n.x, n.y - n.radius - 12);
         }
 
         // Node Label
-        ctx.font = '600 11px "Plus Jakarta Sans", sans-serif';
-        ctx.fillStyle = n.compromised ? '#fca5a5' : '#f8fafc';
+        ctx.font = '600 11px Inter, sans-serif';
+        ctx.fillStyle = n.compromised ? P.nodeLabelHighRisk : P.nodeLabel;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'top';
         ctx.fillText(redactNames ? redactionLabels.get(n.id) || n.type.toUpperCase() : n.name, n.x, n.y + n.radius + 6);
 
         // Classification / Subtitle (hidden when redacting, since it can describe the entity)
         if (n.classification && !redactNames) {
-          ctx.font = '500 9px "JetBrains Mono", monospace';
-          ctx.fillStyle = '#94a3b8';
+          ctx.font = '500 9px Inter, sans-serif';
+          ctx.fillStyle = P.subLabel;
           ctx.fillText(n.classification, n.x, n.y + n.radius + 20);
         }
 
@@ -608,13 +651,13 @@ export const TemporalGraphCanvas: React.FC<Props> = ({
         if (n.compromised) {
           ctx.beginPath();
           ctx.arc(n.x + n.radius * 0.7, n.y - n.radius * 0.7, 7, 0, 2 * Math.PI);
-          ctx.fillStyle = '#ef4444';
-          ctx.strokeStyle = '#020617';
+          ctx.fillStyle = P.badge;
+          ctx.strokeStyle = P.badgeStroke;
           ctx.lineWidth = 1.5;
           ctx.fill();
           ctx.stroke();
 
-          ctx.fillStyle = '#ffffff';
+          ctx.fillStyle = P.icon;
           ctx.font = 'bold 8px monospace';
           ctx.fillText('!', n.x + n.radius * 0.7, n.y - n.radius * 0.7 - 5);
         }
@@ -627,27 +670,27 @@ export const TemporalGraphCanvas: React.FC<Props> = ({
         ctx.save();
         ctx.textAlign = 'left';
         ctx.textBaseline = 'alphabetic';
-        ctx.fillStyle = 'rgba(2, 6, 23, 0.9)';
+        ctx.fillStyle = P.overlayBg;
         ctx.fillRect(16, 16, 420, 80);
-        ctx.strokeStyle = '#ef4444';
+        ctx.strokeStyle = P.overlayBorder;
         ctx.lineWidth = 1.5;
         ctx.strokeRect(16, 16, 420, 80);
 
-        ctx.fillStyle = '#ef4444';
-        ctx.font = 'bold 12px "JetBrains Mono", monospace';
+        ctx.fillStyle = P.overlayRec;
+        ctx.font = 'bold 12px Inter, sans-serif';
         ctx.fillText('● REC // WATCHME REPLAY', 28, 36);
 
-        ctx.fillStyle = '#f8fafc';
-        ctx.font = '11px "Plus Jakarta Sans", sans-serif';
+        ctx.fillStyle = P.overlayText;
+        ctx.font = '11px Inter, sans-serif';
         ctx.fillText((recordingWatermarkText || 'WatchMe replay').slice(0, 60), 28, 54);
 
-        ctx.fillStyle = '#38bdf8';
-        ctx.font = '10px "JetBrains Mono", monospace';
+        ctx.fillStyle = P.overlayClock;
+        ctx.font = '10px Inter, sans-serif';
         const offset = `T-${currentHour.toString().padStart(2, '0')}:00`;
         const abs = hourToUtc(t0, currentHour);
         ctx.fillText(`${offset}${abs ? ` · ${abs}` : ''} · window ${windowHours}h`, 28, 72);
         if (redactNames) {
-          ctx.fillStyle = '#fbbf24';
+          ctx.fillStyle = P.overlayWarn;
           ctx.fillText('NAMES REDACTED', 28, 88);
         }
         ctx.restore();
@@ -662,7 +705,7 @@ export const TemporalGraphCanvas: React.FC<Props> = ({
       isRunning = false;
       if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
     };
-  }, [edges, currentHour, selectedNodeId, hoveredNode, zoom, pan, draggedNode, isRecording, recordingWatermarkText, highlightedCitationId, redactNames, redactionLabels, t0, windowHours]);
+  }, [edges, currentHour, selectedNodeId, hoveredNode, zoom, pan, draggedNode, isRecording, recordingWatermarkText, highlightedCitationId, redactNames, redactionLabels, t0, windowHours, theme]);
 
   // Handle Resize
   useEffect(() => {
