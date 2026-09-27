@@ -1,4 +1,5 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useMemo } from 'react';
+import { hourToUtc } from '../api';
 import { SecurityNode, SecurityEdge, NodeType, RiskBand } from '../types';
 import { 
   ZoomIn, 
@@ -19,7 +20,13 @@ import {
 interface Props {
   nodes: SecurityNode[];
   edges: SecurityEdge[];
-  currentHour: number; // 48 down to 0 (hours before present)
+  currentHour: number; // windowHours down to 0 (hours before T-0)
+  windowHours?: number;
+  t0?: string;
+  redactNames?: boolean; // replace entity names with type tokens (for sharing replays more widely)
+  truncated?: boolean;
+  totalNodeCount?: number;
+  totalEdgeCount?: number;
   onSelectNode: (node: SecurityNode) => void;
   selectedNodeId: string | null;
   highlightedCitationId?: string | null;
@@ -54,6 +61,12 @@ export const TemporalGraphCanvas: React.FC<Props> = ({
   nodes,
   edges,
   currentHour,
+  windowHours = 48,
+  t0,
+  redactNames = false,
+  truncated = false,
+  totalNodeCount,
+  totalEdgeCount,
   onSelectNode,
   selectedNodeId,
   highlightedCitationId,
@@ -88,6 +101,17 @@ export const TemporalGraphCanvas: React.FC<Props> = ({
     domain: true,
     alert: true
   });
+
+  // Redaction tokens (USER_1, HOST_2 ...) in stable order
+  const redactionLabels = useMemo(() => {
+    const counters: Record<string, number> = {};
+    const map = new Map<string, string>();
+    nodes.forEach(n => {
+      counters[n.type] = (counters[n.type] || 0) + 1;
+      map.set(n.id, `${n.type.toUpperCase()}_${counters[n.type]}`);
+    });
+    return map;
+  }, [nodes]);
 
   // Persistent sim nodes map
   const simNodesRef = useRef<Map<string, SimNode>>(new Map());
@@ -319,15 +343,19 @@ export const TemporalGraphCanvas: React.FC<Props> = ({
         const dy = target.y - source.y;
         const dist = Math.sqrt(dx * dx + dy * dy) || 1;
         const desiredDist = 180;
-        const springForce = (dist - desiredDist) * 0.003;
+        // Linear (Hooke) spring along the unit vector, capped. The previous force grew with distance squared,
+        // which made the simulation diverge to NaN within about a second for hub nodes with many edges.
+        const springForce = Math.max(-6, Math.min(6, (dist - desiredDist) * 0.02));
+        const ux = dx / dist;
+        const uy = dy / dist;
 
         if (!source.pinned) {
-          source.vx += dx * springForce;
-          source.vy += dy * springForce;
+          source.vx += ux * springForce;
+          source.vy += uy * springForce;
         }
         if (!target.pinned) {
-          target.vx -= dx * springForce;
-          target.vy -= dy * springForce;
+          target.vx -= ux * springForce;
+          target.vy -= uy * springForce;
         }
       });
 
@@ -345,8 +373,17 @@ export const TemporalGraphCanvas: React.FC<Props> = ({
         }
         n.vx *= 0.82;
         n.vy *= 0.82;
+        // Cap velocity and recover from any non-finite state so one bad frame cannot freeze the canvas
+        const maxV = 25;
+        n.vx = Math.max(-maxV, Math.min(maxV, n.vx));
+        n.vy = Math.max(-maxV, Math.min(maxV, n.vy));
+        if (!Number.isFinite(n.vx) || !Number.isFinite(n.vy)) { n.vx = 0; n.vy = 0; }
         n.x += n.vx;
         n.y += n.vy;
+        if (!Number.isFinite(n.x) || !Number.isFinite(n.y)) {
+          n.x = centerX + (Math.random() - 0.5) * 200;
+          n.y = centerY + (Math.random() - 0.5) * 200;
+        }
 
         const margin = 40;
         if (n.x < margin) n.vx += 1.5;
@@ -357,6 +394,11 @@ export const TemporalGraphCanvas: React.FC<Props> = ({
 
       // Render Canvas
       ctx.clearRect(0, 0, width, height);
+      if (isRecording) {
+        // The on-screen background is CSS, which captureStream does not see; paint one into the video
+        ctx.fillStyle = '#020617';
+        ctx.fillRect(0, 0, width, height);
+      }
       ctx.save();
       ctx.translate(pan.x, pan.y);
       ctx.scale(zoom, zoom);
@@ -547,10 +589,10 @@ export const TemporalGraphCanvas: React.FC<Props> = ({
         ctx.fillStyle = n.compromised ? '#fca5a5' : '#f8fafc';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'top';
-        ctx.fillText(n.name, n.x, n.y + n.radius + 6);
+        ctx.fillText(redactNames ? redactionLabels.get(n.id) || n.type.toUpperCase() : n.name, n.x, n.y + n.radius + 6);
 
-        // Classification / Subtitle
-        if (n.classification) {
+        // Classification / Subtitle (hidden when redacting, since it can describe the entity)
+        if (n.classification && !redactNames) {
           ctx.font = '500 9px "JetBrains Mono", monospace';
           ctx.fillStyle = '#94a3b8';
           ctx.fillText(n.classification, n.x, n.y + n.radius + 20);
@@ -580,28 +622,34 @@ export const TemporalGraphCanvas: React.FC<Props> = ({
 
       ctx.restore();
 
-      // Burned-in overlays for Replay / Video Evidence (Section 8 Extended Spec)
+      // Burned-in overlays for replay evidence (section 8): title, case, and the timeline clock
       if (isRecording) {
         ctx.save();
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'alphabetic';
         ctx.fillStyle = 'rgba(2, 6, 23, 0.9)';
-        ctx.fillRect(16, 16, 360, 80);
+        ctx.fillRect(16, 16, 420, 80);
         ctx.strokeStyle = '#ef4444';
         ctx.lineWidth = 1.5;
-        ctx.strokeRect(16, 16, 360, 80);
+        ctx.strokeRect(16, 16, 420, 80);
 
         ctx.fillStyle = '#ef4444';
         ctx.font = 'bold 12px "JetBrains Mono", monospace';
-        ctx.fillText('● REC // WATCHME FORENSIC EVIDENCE ARTIFACT', 28, 36);
+        ctx.fillText('● REC // WATCHME REPLAY', 28, 36);
 
         ctx.fillStyle = '#f8fafc';
         ctx.font = '11px "Plus Jakarta Sans", sans-serif';
-        ctx.fillText(recordingWatermarkText || '48-Hour Continuous Graph Subgraph', 28, 54);
+        ctx.fillText((recordingWatermarkText || 'WatchMe replay').slice(0, 60), 28, 54);
 
         ctx.fillStyle = '#38bdf8';
         ctx.font = '10px "JetBrains Mono", monospace';
-        const hoursAgo = currentHour === 0 ? 'T-00:00 (INCIDENT PRESENT)' : `T-${currentHour.toString().padStart(2, '0')}:00 HRS`;
-        ctx.fillText(`TIMELINE CLOCK: ${hoursAgo} · SHA-256 VERIFIED`, 28, 72);
-
+        const offset = `T-${currentHour.toString().padStart(2, '0')}:00`;
+        const abs = hourToUtc(t0, currentHour);
+        ctx.fillText(`${offset}${abs ? ` · ${abs}` : ''} · window ${windowHours}h`, 28, 72);
+        if (redactNames) {
+          ctx.fillStyle = '#fbbf24';
+          ctx.fillText('NAMES REDACTED', 28, 88);
+        }
         ctx.restore();
       }
 
@@ -614,7 +662,7 @@ export const TemporalGraphCanvas: React.FC<Props> = ({
       isRunning = false;
       if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
     };
-  }, [edges, currentHour, selectedNodeId, hoveredNode, zoom, pan, draggedNode, isRecording, recordingWatermarkText, highlightedCitationId]);
+  }, [edges, currentHour, selectedNodeId, hoveredNode, zoom, pan, draggedNode, isRecording, recordingWatermarkText, highlightedCitationId, redactNames, redactionLabels, t0, windowHours]);
 
   // Handle Resize
   useEffect(() => {
@@ -787,7 +835,7 @@ export const TemporalGraphCanvas: React.FC<Props> = ({
             <SlidersHorizontal className="w-3.5 h-3.5 text-cyan-400" />
             <span>SUBGRAPH FILTERS</span>
           </div>
-          <span className="text-[10px] text-slate-500">MEMGRAPH</span>
+          <span className="text-[10px] text-slate-500">{nodes.length} NODES</span>
         </div>
 
         {/* First-Seen Edges & Crown Jewel Toggles */}
@@ -852,10 +900,14 @@ export const TemporalGraphCanvas: React.FC<Props> = ({
         </div>
       </div>
 
-      {/* Truncation / Scalability Notice Banner (Section 10 & 16) */}
-      <div className="absolute bottom-4 right-4 flex items-center gap-2 px-3 py-1.5 bg-slate-900/90 border border-slate-800 rounded-lg text-xs font-mono text-slate-400 z-10">
+      {/* Graph size / truncation notice */}
+      <div className={`absolute bottom-4 right-4 flex items-center gap-2 px-3 py-1.5 bg-slate-900/90 border rounded-lg text-xs font-mono z-10 ${truncated ? 'border-amber-500/50 text-amber-300' : 'border-slate-800 text-slate-400'}`}>
         <Info className="w-3.5 h-3.5 text-cyan-400" />
-        <span>fcose layout active · Subgraph: &lt;5,000 nodes cap (2 hops)</span>
+        <span>
+          {truncated
+            ? `Truncated: showing ${nodes.length} of ${totalNodeCount ?? '?'} nodes, ${edges.length} of ${totalEdgeCount ?? '?'} edges (highest risk kept)`
+            : `${nodes.length} nodes · ${edges.length} edges · force-directed layout`}
+        </span>
       </div>
     </div>
   );

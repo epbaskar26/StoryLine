@@ -18,19 +18,22 @@ interface Props {
   onSelectEntity: (entityId: string) => void;
   onRemoveFromWatchlist: (id: string) => void;
   onAddToWatchlist: (entityId: string, reason: string) => void;
+  searchParams: { windowDays: number; t0: string };
 }
 
 export const WatchlistHome: React.FC<Props> = ({
   watchlist,
   onSelectEntity,
   onRemoveFromWatchlist,
-  onAddToWatchlist
+  onAddToWatchlist,
+  searchParams
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [aliasSearchResults, setAliasSearchResults] = useState<any[]>([]);
   const [isSearching, setIsSearching] = useState(false);
-  const [showAddModal, setShowAddModal] = useState(false);
-  const [newReason, setNewReason] = useState('Anomalous credential access spike');
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [newReason, setNewReason] = useState('Suspicious activity under review');
+  const debounceRef = React.useRef<number | null>(null);
 
   // Search entities & resolve aliases (FR-01)
   const handleSearchChange = (term: string) => {
@@ -40,16 +43,21 @@ export const WatchlistHome: React.FC<Props> = ({
       return;
     }
 
-    setIsSearching(true);
-    fetch(`/api/entities/resolve?term=${encodeURIComponent(term)}`)
-      .then(res => res.json())
-      .then(data => {
-        if (data.matches) {
-          setAliasSearchResults(data.matches);
-        }
-      })
-      .catch(err => console.error(err))
-      .finally(() => setIsSearching(false));
+    if (debounceRef.current) window.clearTimeout(debounceRef.current);
+    debounceRef.current = window.setTimeout(() => {
+      setIsSearching(true);
+      setSearchError(null);
+      const q = new URLSearchParams({ term, windowDays: String(searchParams.windowDays) });
+      if (searchParams.t0) q.set('t0', searchParams.t0);
+      fetch(`/api/entities/resolve?${q}`)
+        .then(async res => {
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+          setAliasSearchResults(data.matches || []);
+        })
+        .catch(err => setSearchError(err.message))
+        .finally(() => setIsSearching(false));
+    }, 350);
   };
 
   return (
@@ -65,7 +73,7 @@ export const WatchlistHome: React.FC<Props> = ({
             Monitored Risky Identities & Watchlist Home
           </h2>
           <p className="text-sm text-slate-400 mt-1 max-w-2xl">
-            Triage alerts in minutes. Search any identity by username, UPN, corporate email, or Windows Kerberos SID—WatchMe resolves them into a single canonical identity.
+            Search an identity (press Enter to open it directly), then add it to the watchlist to track it.
           </p>
         </div>
 
@@ -77,11 +85,24 @@ export const WatchlistHome: React.FC<Props> = ({
             placeholder="Search username, UPN, SID, email..."
             value={searchTerm}
             onChange={(e) => handleSearchChange(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && searchTerm.trim()) {
+                onSelectEntity(searchTerm.trim());
+                setSearchTerm('');
+                setAliasSearchResults([]);
+              }
+            }}
             className="w-full bg-slate-900 border border-slate-700 rounded-lg pl-9 pr-4 py-2 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-cyan-500 font-mono"
           />
 
+          {(isSearching || searchError) && (
+            <div className="absolute top-full left-0 right-0 mt-1 p-2 bg-slate-900 border border-slate-700 rounded-lg text-[11px] font-mono text-slate-400 z-30">
+              {isSearching ? 'Searching...' : `Search failed: ${searchError}`}
+            </div>
+          )}
+
           {/* Autocomplete Dropdown for Canonical Resolution */}
-          {aliasSearchResults.length > 0 && (
+          {!isSearching && aliasSearchResults.length > 0 && (
             <div className="absolute top-full left-0 right-0 mt-1 bg-slate-900 border border-slate-700 rounded-lg shadow-2xl z-30 overflow-hidden divide-y divide-slate-800">
               {aliasSearchResults.map((match) => (
                 <div
@@ -100,8 +121,19 @@ export const WatchlistHome: React.FC<Props> = ({
                   <div className="text-[11px] text-slate-400 font-mono mt-0.5">
                     Canonical ID: {match.canonicalId}
                   </div>
-                  <div className="text-[10px] text-slate-500 font-mono mt-0.5">
-                    Matched alias: <span className="text-slate-300">{match.matchedAlias}</span>
+                  <div className="flex items-center justify-between text-[10px] text-slate-500 font-mono mt-0.5">
+                    <span>Matched: <span className="text-slate-300">{match.matchedAlias}</span></span>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onAddToWatchlist(match.id, newReason);
+                        setSearchTerm('');
+                        setAliasSearchResults([]);
+                      }}
+                      className="px-2 py-0.5 bg-cyan-600 hover:bg-cyan-500 text-slate-950 font-bold rounded"
+                    >
+                      + Watch
+                    </button>
                   </div>
                 </div>
               ))}
@@ -112,13 +144,21 @@ export const WatchlistHome: React.FC<Props> = ({
 
       {/* Watchlist Cards Grid (FR-03: Up to 20 concurrent entities per analyst) */}
       <div className="space-y-4">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-3">
           <h3 className="text-sm font-bold text-slate-200 font-mono flex items-center gap-2">
             <span>ACTIVE WATCHLIST ENTITIES</span>
             <span className="text-xs px-2 py-0.5 rounded bg-slate-800 text-slate-400">
               {watchlist.length}/20 CONCURRENT
             </span>
           </h3>
+          <label className="flex items-center gap-2 text-[11px] font-mono text-slate-400">
+            Reason for new entries:
+            <input
+              value={newReason}
+              onChange={e => setNewReason(e.target.value)}
+              className="bg-slate-900 border border-slate-700 rounded px-2 py-0.5 text-slate-200 w-64"
+            />
+          </label>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -150,7 +190,7 @@ export const WatchlistHome: React.FC<Props> = ({
                 {/* 48h Risk Sparkline */}
                 <div className="mb-4 p-2 bg-slate-950 rounded border border-slate-800/80">
                   <span className="text-[9px] font-mono text-slate-500 block mb-1">
-                    48H RISK SPARKLINE:
+                    CUMULATIVE RISK ACROSS WINDOW:
                   </span>
                   <div className="flex items-end gap-1 h-6">
                     {item.sparkline.map((val, sIdx) => (

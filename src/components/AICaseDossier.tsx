@@ -13,16 +13,21 @@ import {
   CheckCircle2,
   AlertTriangle
 } from 'lucide-react';
-import { UserProfile } from '../types';
+import { UserProfile, CitationAudit } from '../types';
+import { api, sha256Hex } from '../api';
 
 interface Props {
   userProfile: UserProfile;
+  entityKey: string;
+  aiConfigured: boolean;
   onCitationClick?: (citationId: string) => void;
   onSaveCase?: () => void;
 }
 
-export const AICaseDossier: React.FC<Props> = ({ 
-  userProfile, 
+export const AICaseDossier: React.FC<Props> = ({
+  userProfile,
+  entityKey,
+  aiConfigured,
   onCitationClick,
   onSaveCase
 }) => {
@@ -33,29 +38,39 @@ export const AICaseDossier: React.FC<Props> = ({
   const [showPrivacyInspector, setShowPrivacyInspector] = useState(false);
   const [copied, setCopied] = useState(false);
   const [analystApproved, setAnalystApproved] = useState(false);
+  const [citationAudit, setCitationAudit] = useState<CitationAudit | null>(null);
+  const [sentContext, setSentContext] = useState<unknown>(null);
+  const [sentToModel, setSentToModel] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const handleGenerateSummary = async () => {
     setLoading(true);
     setAnalystApproved(false);
+    setError(null);
     try {
-      const res = await fetch('/api/gemini/case-summary', {
+      const data = await api<{ summary: string; engine: string; citationAudit: CitationAudit; sanitizedContext: unknown; sentToModel: boolean }>('/api/gemini/case-summary', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          profile: userProfile,
-          privacyModeEnabled: privacyMode
-        })
+        body: { profile: userProfile, privacyModeEnabled: privacyMode },
       });
-
-      const data = await res.json();
-      if (data.summary) {
-        setSummary(data.summary);
-        setEngineUsed(data.engine || 'Gemini 3.8 Flash (Zero-Retention)');
-      }
-    } catch (err) {
-      console.error('Failed to generate summary', err);
+      setSummary(data.summary);
+      setEngineUsed(data.engine);
+      setCitationAudit(data.citationAudit);
+      setSentContext(data.sanitizedContext);
+      setSentToModel(data.sentToModel);
+    } catch (err: any) {
+      setError(err.message || 'Failed to generate summary');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleApprove = async () => {
+    if (!summary) return;
+    try {
+      await api('/api/ai/approve', { method: 'POST', body: { entityKey, summarySha256: await sha256Hex(summary) } });
+      setAnalystApproved(true);
+    } catch (err: any) {
+      setError(`Approval not recorded: ${err.message}`);
     }
   };
 
@@ -79,7 +94,7 @@ export const AICaseDossier: React.FC<Props> = ({
           <button
             key={pIdx}
             onClick={() => onCitationClick && onCitationClick(citationId)}
-            title={`Click to highlight entity/edge ${citationId} on 48h canvas`}
+            title={`Click to highlight ${citationId} on the graph`}
             className="inline-flex items-center px-1.5 py-0.2 mx-0.5 rounded font-mono text-[11px] font-semibold bg-cyan-950/80 text-cyan-300 border border-cyan-800 hover:border-cyan-400 hover:bg-cyan-900 transition-colors"
           >
             [{citationId}]
@@ -97,13 +112,15 @@ export const AICaseDossier: React.FC<Props> = ({
         <div>
           <div className="flex items-center gap-2 text-cyan-400 font-mono text-xs mb-1">
             <Sparkles className="w-4 h-4 text-cyan-400" />
-            <span>SECTION 7 & 8: PRIVACY-PRESERVING AI INCIDENT DOSSIER</span>
+            <span>PRIVACY-PRESERVING CASE SUMMARY</span>
           </div>
           <h2 className="text-xl font-bold text-slate-100">
             Targeted Context Injection & AI Case Summary
           </h2>
           <p className="text-sm text-slate-400 mt-1 max-w-2xl">
-            Translates the 48-hour graph into an executive briefing via Gemini 3.8 Flash. Every claim strictly cites verified node and edge IDs without raw sensitive logs ever entering model spaces.
+            {aiConfigured
+              ? 'Sends a tokenized summary of the graph (no raw logs, entity names replaced by tokens) to the configured AI model, then restores the names locally. Citations are checked against the graph.'
+              : 'No AI model is configured (set GEMINI_API_KEY), so the summary is generated deterministically from the graph. Nothing leaves this server.'}
           </p>
         </div>
 
@@ -113,7 +130,7 @@ export const AICaseDossier: React.FC<Props> = ({
             className="flex items-center gap-2 px-3.5 py-2 bg-slate-900 hover:bg-slate-800 text-slate-200 border border-slate-700 rounded-lg text-xs font-semibold transition-colors"
           >
             <Lock className="w-4 h-4 text-emerald-400" />
-            <span>Privacy Boundary Audit</span>
+            <span>Privacy Inspector</span>
           </button>
 
           <button
@@ -143,7 +160,7 @@ export const AICaseDossier: React.FC<Props> = ({
             <div className="flex items-center gap-2">
               <ShieldCheck className="w-5 h-5 text-emerald-400" />
               <h3 className="text-sm font-bold text-slate-100 font-mono">
-                ENTERPRISE PRIVACY BOUNDARY INSPECTOR (SECTION 7)
+                PRIVACY BOUNDARY INSPECTOR
               </h3>
             </div>
             <div className="flex items-center gap-2 text-xs font-mono">
@@ -156,45 +173,24 @@ export const AICaseDossier: React.FC<Props> = ({
                     : 'bg-red-500/20 text-red-400 border border-red-500/40'
                 }`}
               >
-                {privacyMode ? 'ENFORCED (Zero PII Leaked)' : 'PASSTHROUGH'}
+                {privacyMode ? 'TOKENIZED' : 'PASSTHROUGH (real names sent)'}
               </button>
             </div>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs font-mono">
-            <div className="p-3.5 bg-slate-950 border border-red-950 rounded-lg">
-              <div className="text-red-400 font-semibold mb-2 flex items-center justify-between">
-                <span>1. Raw SIEM / EDR Logs (Sensitive)</span>
-                <span className="text-[10px] text-red-500">❌ NEVER SENT TO AI</span>
-              </div>
-              <pre className="text-slate-400 overflow-x-auto whitespace-pre-wrap leading-relaxed text-[11px]">
-{`{
-  "user_email": "john.smith@megacorp.internal",
-  "employee_ssn": "XXX-XX-8491",
-  "salary_bracket": "$195,000",
-  "raw_ntlm_hash": "aad3b435b51404eeaad3b435b51404ee:31d6cfe0d16ae931b73c59d7e0c089c0",
-  "internal_share": "\\\\srv-hr-db01.corp\\payroll$\\2026_executive_bonuses.xlsx",
-  "raw_workstation_ip": "10.14.2.45"
-}`}
-              </pre>
+          <div className="text-xs font-mono space-y-2">
+            <div className="text-slate-400">
+              {sentContext
+                ? sentToModel
+                  ? `This is the exact payload sent to the model in the last request (${privacyMode ? 'tokenized' : 'PASSTHROUGH: real names'}):`
+                  : 'Last request did not reach an AI model. This is the payload that would have been sent:'
+                : 'Generate a summary to see the exact payload sent to the model.'}
             </div>
-
-            <div className="p-3.5 bg-slate-950 border border-emerald-950 rounded-lg">
-              <div className="text-emerald-400 font-semibold mb-2 flex items-center justify-between">
-                <span>2. Tokenized Graph Context Injection</span>
-                <span className="text-[10px] text-emerald-400">✅ SANITIZED INGESTION</span>
-              </div>
-              <pre className="text-slate-400 overflow-x-auto whitespace-pre-wrap leading-relaxed text-[11px]">
-{`{
-  "entity_token": "USER_1",
-  "role": "${userProfile.role}",
-  "risk_band": "${userProfile.riskBand}",
-  "graph_fact": "USER_1 ACCESSED APP_CROWN_JEWEL_1 (T-18:00) [e9]",
-  "ttp": ["T1078", "T1005"],
-  "pii_scrubbed": true
-}`}
+            {sentContext != null && (
+              <pre className="p-3.5 bg-slate-950 border border-slate-800 rounded-lg text-slate-300 overflow-auto max-h-80 whitespace-pre-wrap leading-relaxed text-[11px]">
+                {JSON.stringify(sentContext, null, 2)}
               </pre>
-            </div>
+            )}
           </div>
         </div>
       )}
@@ -209,10 +205,10 @@ export const AICaseDossier: React.FC<Props> = ({
                 <FileText className="w-5 h-5 text-cyan-400" />
                 <div>
                   <h3 className="text-base font-bold text-slate-100">
-                    AI Case Dossier: {userProfile.fullName}
+                    Case Summary: {userProfile.fullName}
                   </h3>
                   <div className="text-xs text-slate-400 font-mono mt-0.5">
-                    REF: #CASE-{userProfile.id} · ENGINE: {engineUsed || 'Gemini 3.8 Flash (Zero-Retention)'}
+                    ENGINE: {engineUsed || (aiConfigured ? 'AI model (not run yet)' : 'Deterministic (no AI model configured)')}
                   </div>
                 </div>
               </div>
@@ -249,12 +245,12 @@ export const AICaseDossier: React.FC<Props> = ({
                     <AlertTriangle className="w-4 h-4 text-amber-400" />
                   )}
                   <span className={analystApproved ? 'text-emerald-400 font-bold' : 'text-amber-400'}>
-                    {analystApproved ? 'Analyst Approved for Ticket Handover' : 'AI-generated, analyst review required before export'}
+                    {analystApproved ? 'Approved by analyst (recorded in audit log)' : 'Generated summary: analyst review required before handover'}
                   </span>
                 </div>
                 {!analystApproved && (
                   <button
-                    onClick={() => setAnalystApproved(true)}
+                    onClick={handleApprove}
                     className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-[11px] font-semibold transition-colors"
                   >
                     Approve Summary
@@ -262,6 +258,8 @@ export const AICaseDossier: React.FC<Props> = ({
                 )}
               </div>
             )}
+
+            {error && <div className="mb-3 p-2.5 rounded-lg border border-red-800 bg-red-950/40 text-red-300 text-xs font-mono">{error}</div>}
 
             {summary ? (
               <div className="prose prose-invert max-w-none text-xs leading-relaxed space-y-3 font-sans text-slate-300">
@@ -333,9 +331,22 @@ export const AICaseDossier: React.FC<Props> = ({
               Clicking any citation in the summary text (e.g. <span className="font-mono text-cyan-400">[e4]</span>, <span className="font-mono text-cyan-400">[app_hr]</span>) immediately focuses and highlights that element on the 48-Hour Graph Canvas.
             </p>
             <div className="p-2.5 bg-slate-950 border border-slate-800 rounded-lg text-xs font-mono space-y-1">
-              <div className="text-slate-400">Guardrail Audit:</div>
-              <div className="text-emerald-400 font-semibold">✓ 100% Citations Verified</div>
-              <div className="text-slate-500 text-[10px]">Zero uncited factual claims detected</div>
+              <div className="text-slate-400">Citation check (last summary):</div>
+              {!citationAudit ? (
+                <div className="text-slate-500">Not run yet</div>
+              ) : (
+                <>
+                  <div className={citationAudit.invalidCitations.length || citationAudit.uncitedLines ? 'text-amber-400 font-semibold' : 'text-emerald-400 font-semibold'}>
+                    {citationAudit.validCitations}/{citationAudit.totalCitations} citations match graph ids
+                  </div>
+                  <div className={citationAudit.uncitedLines ? 'text-amber-400' : 'text-slate-500'}>
+                    {citationAudit.uncitedLines} uncited timeline/blast-radius line(s)
+                  </div>
+                  {citationAudit.invalidCitations.length > 0 && (
+                    <div className="text-red-400 text-[10px]">Unknown ids: {citationAudit.invalidCitations.join(', ')}</div>
+                  )}
+                </>
+              )}
             </div>
           </div>
         </div>

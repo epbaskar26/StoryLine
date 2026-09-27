@@ -27,40 +27,46 @@ import { SecurityNode, SecurityEdge } from '../types';
 
 interface Props {
   node: SecurityNode | null;
+  nodes: SecurityNode[];
   edges: SecurityEdge[];
   onClose: () => void;
   onFilterToNodeTimeline: (nodeId: string) => void;
   onExpandNode?: (nodeId: string) => void;
   onPinNode?: (nodeId: string) => void;
   onTagVerdict?: (targetId: string, verdict: 'BENIGN' | 'MALICIOUS') => void;
+  onSaveAnnotation?: (nodeId: string, text: string) => Promise<void>;
 }
 
 export const NodeDetailDrawer: React.FC<Props> = ({
   node,
+  nodes,
   edges,
   onClose,
   onFilterToNodeTimeline,
   onExpandNode,
   onPinNode,
-  onTagVerdict
+  onTagVerdict,
+  onSaveAnnotation
 }) => {
-  const [actionTriggered, setActionTriggered] = useState<string | null>(null);
   const [annotationText, setAnnotationText] = useState(node?.annotation || '');
-  const [annotationSaved, setAnnotationSaved] = useState(false);
+  const [annotationState, setAnnotationState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [verdictStatus, setVerdictStatus] = useState<'BENIGN' | 'MALICIOUS' | null>(null);
 
   if (!node) return null;
 
-  const connectedEdges = edges.filter(e => e.source === node.id || e.target === node.id);
+  const connectedEdges = edges.filter(e => e.source === node.id || e.target === node.id).sort((a, b) => b.hour - a.hour);
+  const nameOf = (id: string) => nodes.find(n => n.id === id)?.name || id;
 
-  const handleAction = (actionName: string) => {
-    setActionTriggered(actionName);
-    setTimeout(() => setActionTriggered(null), 2500);
-  };
-
-  const handleSaveAnnotation = () => {
-    setAnnotationSaved(true);
-    setTimeout(() => setAnnotationSaved(false), 2000);
+  const handleSaveAnnotation = async () => {
+    if (!onSaveAnnotation) return;
+    setAnnotationState('saving');
+    try {
+      await onSaveAnnotation(node.id, annotationText);
+      setAnnotationState('saved');
+      setTimeout(() => setAnnotationState('idle'), 2000);
+    } catch {
+      setAnnotationState('error');
+    }
   };
 
   const handleVerdict = (v: 'BENIGN' | 'MALICIOUS') => {
@@ -169,6 +175,16 @@ export const NodeDetailDrawer: React.FC<Props> = ({
             TELEMETRY ATTRIBUTES
           </h4>
           <div className="p-2.5 bg-slate-950 border border-slate-800 rounded-lg space-y-1 text-xs font-mono max-h-36 overflow-y-auto">
+            {node.firstSeen && (
+              <div className="flex justify-between py-0.5 border-b border-slate-800/40">
+                <span className="text-slate-400">First seen:</span>
+                <span className="text-slate-200 text-right">{node.firstSeen.replace('T', ' ').slice(0, 16)} UTC</span>
+              </div>
+            )}
+            <div className="flex justify-between py-0.5 border-b border-slate-800/40">
+              <span className="text-slate-400">Baseline:</span>
+              <span className="text-slate-200 text-right">{node.firstSeenInBaseline === undefined ? 'not available' : node.firstSeenInBaseline ? 'seen before' : 'FIRST SEEN'}</span>
+            </div>
             {Object.entries(node.details).map(([key, val]) => (
               <div key={key} className="flex justify-between py-0.5 border-b border-slate-800/40 last:border-none">
                 <span className="text-slate-400">{key}:</span>
@@ -182,7 +198,8 @@ export const NodeDetailDrawer: React.FC<Props> = ({
         <div className="space-y-1.5">
           <h4 className="text-xs font-mono text-slate-400 flex items-center justify-between">
             <span>ANALYST ANNOTATION</span>
-            {annotationSaved && <span className="text-[10px] text-emerald-400">Saved to Case!</span>}
+            {annotationState === 'saved' && <span className="text-[10px] text-emerald-400">Saved</span>}
+            {annotationState === 'error' && <span className="text-[10px] text-red-400">Save failed</span>}
           </h4>
           <div className="flex gap-1.5">
             <input
@@ -194,9 +211,10 @@ export const NodeDetailDrawer: React.FC<Props> = ({
             />
             <button
               onClick={handleSaveAnnotation}
-              className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded text-xs font-mono"
+              disabled={annotationState === 'saving'}
+              className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded text-xs font-mono disabled:opacity-50"
             >
-              Save
+              {annotationState === 'saving' ? '...' : 'Save'}
             </button>
           </div>
         </div>
@@ -204,7 +222,7 @@ export const NodeDetailDrawer: React.FC<Props> = ({
         {/* FR-23: Analyst Feedback (Benign / Malicious Verdict) */}
         <div className="p-2.5 bg-slate-950/70 border border-slate-800 rounded-lg space-y-1.5">
           <span className="text-[10px] font-mono text-slate-400 block">
-            FEEDBACK (FEEDS 30-DAY BASELINE & SUPPRESSION):
+            ANALYST VERDICT (RECORDED IN AUDIT LOG):
           </span>
           <div className="grid grid-cols-2 gap-2 text-xs font-mono">
             <button
@@ -237,9 +255,11 @@ export const NodeDetailDrawer: React.FC<Props> = ({
           </h4>
           <div className="space-y-1 max-h-36 overflow-y-auto pr-1">
             {connectedEdges.map(edge => (
-              <div key={edge.id} className="p-1.5 bg-slate-950 border border-slate-800 rounded text-[11px] font-mono flex items-center justify-between">
-                <span className="text-slate-300 truncate max-w-[200px]">{edge.action}</span>
-                <span className="text-slate-500 shrink-0">T-{edge.hour}h</span>
+              <div key={edge.id} title={edge.details} className="p-1.5 bg-slate-950 border border-slate-800 rounded text-[11px] font-mono flex items-center justify-between gap-2">
+                <span className="text-slate-300 truncate">
+                  {edge.action} {edge.source === node.id ? '→' : '←'} {nameOf(edge.source === node.id ? edge.target : edge.source)}
+                </span>
+                <span className="text-slate-500 shrink-0">T-{edge.hour}h · {edge.eventCount}</span>
               </div>
             ))}
           </div>
@@ -248,11 +268,7 @@ export const NodeDetailDrawer: React.FC<Props> = ({
 
       {/* Footer Controls: 1-Hop Expand & Filter */}
       <div className="p-4 border-t border-slate-800 bg-slate-950 space-y-2">
-        {actionTriggered ? (
-          <div className="p-2 bg-emerald-500/20 border border-emerald-500/40 rounded text-emerald-400 text-xs font-mono text-center">
-            Dispatched: {actionTriggered}
-          </div>
-        ) : (
+        {(
           <div className="grid grid-cols-2 gap-2 text-xs font-mono">
             {onExpandNode && (
               <button

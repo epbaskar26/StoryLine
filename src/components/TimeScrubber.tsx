@@ -1,19 +1,22 @@
 import React, { useEffect } from 'react';
 import { Play, Pause, RotateCcw, SkipForward, SkipBack, Clock, AlertTriangle, ChevronRight, Activity } from 'lucide-react';
-import { SecurityMilestone } from '../types';
+import { SecurityMilestone, SecurityEdge } from '../types';
+import { hourToUtc } from '../api';
 
 interface Props {
-  currentHour: number; // 48 to 0
+  currentHour: number; // windowHours to 0
   onChangeHour: React.Dispatch<React.SetStateAction<number>>;
   isPlaying: boolean;
   onTogglePlay: () => void;
   playbackSpeed: number;
   onChangeSpeed: (speed: number) => void;
   milestones: SecurityMilestone[];
+  edges: SecurityEdge[];
+  windowHours: number;
+  t0?: string;
   visibleNodeCount: number;
   totalNodeCount: number;
   visibleEdgeCount: number;
-  histogramBuckets?: { hour: number; count: number; maxSeverity: string }[];
 }
 
 export const TimeScrubber: React.FC<Props> = ({
@@ -24,6 +27,9 @@ export const TimeScrubber: React.FC<Props> = ({
   playbackSpeed,
   onChangeSpeed,
   milestones,
+  edges,
+  windowHours,
+  t0,
   visibleNodeCount,
   totalNodeCount,
   visibleEdgeCount,
@@ -63,7 +69,7 @@ export const TimeScrubber: React.FC<Props> = ({
         onChangeHour((h: number) => Math.max(0, h - 1));
       } else if (e.key === 'ArrowLeft' && !e.shiftKey) {
         e.preventDefault();
-        onChangeHour((h: number) => Math.min(48, h + 1));
+        onChangeHour((h: number) => Math.min(windowHours, h + 1));
       } else if (e.key === 'ArrowRight' && e.shiftKey) {
         // Jump to next risky event
         e.preventDefault();
@@ -82,28 +88,27 @@ export const TimeScrubber: React.FC<Props> = ({
   }, [onTogglePlay, onChangeHour, milestones, currentHour]);
 
   const formatHourLabel = (h: number) => {
-    if (h === 0) return 'T-00:00 (Incident Present State)';
-    return `T-${h.toString().padStart(2, '0')}:00 HRS AGO`;
+    const abs = hourToUtc(t0, h);
+    if (h === 0) return `T-00:00 (T-0)${abs ? ` · ${abs}` : ''}`;
+    return `T-${h.toString().padStart(2, '0')}:00${abs ? ` · ${abs}` : ''}`;
   };
 
-  // Generate 48-Hour Event Density Histogram Bars (FR-11)
-  const histogramBars = Array.from({ length: 48 }, (_, idx) => {
-    const h = 48 - idx;
-    const m = milestones.find(item => item.hour === h);
-    let eventCount = 1;
-    let sev = 'low';
-
-    if (h === 48) { eventCount = 35; sev = 'low'; }
-    else if (h === 40) { eventCount = 8; sev = 'medium'; }
-    else if (h === 38) { eventCount = 5; sev = 'high'; }
-    else if (h === 32) { eventCount = 12; sev = 'critical'; }
-    else if (h === 28) { eventCount = 18; sev = 'critical'; }
-    else if (h === 18) { eventCount = 92; sev = 'critical'; }
-    else if (h === 8) { eventCount = 124; sev = 'critical'; }
-    else if (h === 2) { eventCount = 48; sev = 'critical'; }
-    else { eventCount = (idx % 5 === 0) ? 6 : 2; }
-
-    return { hour: h, count: eventCount, sev, milestone: m };
+  // FR-11: event density histogram, computed from the graph's edges (event count by hour of first activity)
+  const severityRank: Record<SecurityEdge['status'], number> = { allowed: 0, blocked: 1, anomalous: 2, critical: 3 };
+  const buckets = new Map<number, { count: number; rank: number }>();
+  for (const e of edges) {
+    const h = Math.max(1, Math.min(windowHours, e.hour));
+    const b = buckets.get(h) || { count: 0, rank: 0 };
+    b.count += e.eventCount;
+    b.rank = Math.max(b.rank, severityRank[e.status] ?? 0);
+    buckets.set(h, b);
+  }
+  const maxCount = Math.max(1, ...Array.from(buckets.values()).map(b => b.count));
+  const histogramBars = Array.from({ length: windowHours }, (_, idx) => {
+    const h = windowHours - idx;
+    const b = buckets.get(h);
+    const sev = !b ? 'none' : b.rank === 3 ? 'critical' : b.rank === 2 ? 'high' : 'low';
+    return { hour: h, count: b?.count || 0, sev, milestone: milestones.find(item => item.hour === h) };
   });
 
   const jumpToNextRiskyEvent = () => {
@@ -161,13 +166,13 @@ export const TimeScrubber: React.FC<Props> = ({
         {histogramBars.map((bar, idx) => {
           const isCurrent = bar.hour === currentHour;
           const isPastOrCurrent = currentHour <= bar.hour;
-          const barHeightPct = Math.min(100, Math.max(15, (bar.count / 125) * 100));
+          const barHeightPct = bar.count === 0 ? 4 : Math.max(12, Math.sqrt(bar.count / maxCount) * 100);
 
           return (
             <div
               key={idx}
               onClick={() => onChangeHour(bar.hour)}
-              title={`T-${bar.hour}:00h · ${bar.count} security events ${bar.milestone ? `· ${bar.milestone.title}` : ''}`}
+              title={`T-${bar.hour}:00h · ${bar.count} event(s) ${bar.milestone ? `· ${bar.milestone.title}` : ''}`}
               className="flex-1 h-full flex items-end cursor-pointer group"
             >
               <div
@@ -176,6 +181,10 @@ export const TimeScrubber: React.FC<Props> = ({
                     ? 'bg-cyan-400 shadow-[0_0_8px_rgba(6,182,212,0.8)]' 
                     : bar.sev === 'critical'
                     ? isPastOrCurrent ? 'bg-red-500' : 'bg-red-950'
+                    : bar.sev === 'high'
+                    ? isPastOrCurrent ? 'bg-amber-500' : 'bg-amber-950'
+                    : bar.sev === 'none'
+                    ? 'bg-slate-800/40'
                     : isPastOrCurrent ? 'bg-slate-500' : 'bg-slate-800'
                 } group-hover:bg-cyan-300`}
                 style={{ height: `${barHeightPct}%` }}
@@ -190,12 +199,12 @@ export const TimeScrubber: React.FC<Props> = ({
         {/* Milestone Marker Pins */}
         <div className="relative w-full h-3 mb-1">
           {milestones.map((m) => {
-            const leftPct = ((48 - m.hour) / 48) * 100;
+            const leftPct = ((windowHours - m.hour) / windowHours) * 100;
             const isPassed = currentHour <= m.hour;
 
             return (
               <button
-                key={m.timeLabel}
+                key={`${m.timeLabel}-${m.title}`}
                 onClick={() => onChangeHour(m.hour)}
                 title={`${m.timeLabel}: ${m.title} (${m.mitreTactic})`}
                 className="absolute top-0 -translate-x-1/2 flex flex-col items-center group cursor-pointer"
@@ -217,19 +226,22 @@ export const TimeScrubber: React.FC<Props> = ({
         <input
           type="range"
           min="0"
-          max="48"
+          max={windowHours}
           step="1"
-          value={48 - currentHour}
-          onChange={(e) => onChangeHour(48 - Number(e.target.value))}
+          value={windowHours - currentHour}
+          onChange={(e) => onChangeHour(windowHours - Number(e.target.value))}
           className="w-full h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-cyan-500 focus:outline-none"
         />
 
         <div className="flex justify-between text-[10px] font-mono text-slate-400 mt-1">
-          <span>T-48:00 (Baseline)</span>
-          <span>T-36:00</span>
-          <span>T-24:00 (Midpoint)</span>
-          <span>T-12:00</span>
-          <span className="text-cyan-400 font-semibold">T-00:00 (Present)</span>
+          {[1, 0.75, 0.5, 0.25, 0].map(f => {
+            const h = Math.round(windowHours * f);
+            return (
+              <span key={f} className={h === 0 ? 'text-cyan-400 font-semibold' : ''} title={hourToUtc(t0, h)}>
+                T-{String(h).padStart(2, '0')}:00{h === windowHours ? ' (start)' : h === 0 ? ' (T-0)' : ''}
+              </span>
+            );
+          })}
         </div>
       </div>
 
@@ -238,8 +250,8 @@ export const TimeScrubber: React.FC<Props> = ({
         <div className="flex items-center gap-2">
           {/* Reset */}
           <button
-            onClick={() => onChangeHour(48)}
-            title="Reset to T-48h Baseline"
+            onClick={() => onChangeHour(windowHours)}
+            title={`Reset to start of window (T-${windowHours}h)`}
             className="p-1.5 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded transition-colors"
           >
             <RotateCcw className="w-4 h-4" />

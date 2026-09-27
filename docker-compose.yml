@@ -1,0 +1,28 @@
+# Local lab: PostgreSQL for WatchMe's cases/audit log, and Splunk Free as the log source.
+# Start: docker compose up -d   (Splunk takes a few minutes on first start)
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: watchme
+      POSTGRES_PASSWORD: watchme
+      POSTGRES_DB: watchme
+    ports: ["127.0.0.1:5432:5432"]
+    volumes: ["pg-data:/var/lib/postgresql/data"]
+
+  splunk:
+    image: splunk/splunk:latest
+    environment:
+      SPLUNK_START_ARGS: --accept-license
+      SPLUNK_GENERAL_TERMS: --accept-sgt-current-at-splunk-com
+      SPLUNK_PASSWORD: ChangeMe123!
+      SPLUNK_LICENSE_URI: Free
+    ports:
+      - "127.0.0.1:8000:8000" # web UI
+      - "127.0.0.1:8089:8089" # REST API used by WatchMe
+    volumes: ["splunk-var:/opt/splunk/var", "splunk-etc:/opt/splunk/etc"]
+
+volumes:
+  pg-data: {}
+  splunk-var: {}
+  splunk-etc: {}

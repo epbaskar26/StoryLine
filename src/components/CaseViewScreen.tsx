@@ -16,6 +16,7 @@ import { CaseRecord } from '../types';
 
 interface Props {
   cases: CaseRecord[];
+  activeCaseId: string | null;
   onOpenCase: (caseId: string) => void;
   onExportTimelineJson: () => void;
   onExportTimelineCsv: () => void;
@@ -23,6 +24,7 @@ interface Props {
 
 export const CaseViewScreen: React.FC<Props> = ({
   cases,
+  activeCaseId,
   onOpenCase,
   onExportTimelineJson,
   onExportTimelineCsv
@@ -42,13 +44,13 @@ export const CaseViewScreen: React.FC<Props> = ({
         <div>
           <div className="flex items-center gap-2 text-cyan-400 font-mono text-xs mb-1">
             <FolderArchive className="w-4 h-4" />
-            <span>FR-19 & FR-21: CASES & FORENSIC EVIDENCE REPOSITORY</span>
+            <span>CASES & EVIDENCE</span>
           </div>
           <h2 className="text-xl font-bold text-slate-100">
             Case Snapshots, Handover & Export
           </h2>
           <p className="text-sm text-slate-400 mt-1 max-w-2xl">
-            Cases persist beyond the 48-hour Memgraph rolling window. Each case record seals graph snapshots, SHA-256 evidence hashes, annotations, and outbound ticket links.
+            Each case stores a snapshot of the graph as it was when saved (including expansions and annotations), the snapshot's SHA-256, registered evidence files with their hashes, and ticket handovers. Exports below apply to the graph currently open.
           </p>
         </div>
 
@@ -59,14 +61,14 @@ export const CaseViewScreen: React.FC<Props> = ({
             className="flex items-center gap-2 px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg text-xs font-semibold transition-colors"
           >
             <Download className="w-4 h-4 text-cyan-400" />
-            <span>Export CSV</span>
+            <span>Export current graph (CSV)</span>
           </button>
           <button
             onClick={onExportTimelineJson}
             className="flex items-center gap-2 px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg text-xs font-semibold transition-colors"
           >
             <Download className="w-4 h-4 text-cyan-400" />
-            <span>Export JSON</span>
+            <span>Export current graph (JSON)</span>
           </button>
         </div>
       </div>
@@ -81,7 +83,7 @@ export const CaseViewScreen: React.FC<Props> = ({
           {cases.map(c => (
             <div
               key={c.id}
-              className="p-5 bg-slate-900 border border-slate-800 rounded-xl space-y-3 hover:border-slate-700 transition-colors"
+              className={`p-5 bg-slate-900 border rounded-xl space-y-3 hover:border-slate-700 transition-colors ${c.id === activeCaseId ? 'border-cyan-600' : 'border-slate-800'}`}
             >
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-2">
                 <div className="flex items-center gap-3">
@@ -91,6 +93,8 @@ export const CaseViewScreen: React.FC<Props> = ({
                   <h4 className="text-sm font-bold text-slate-100 font-mono">
                     {c.caseRef}: {c.title}
                   </h4>
+                  {c.dataSource === 'demo' && <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-amber-500/20 text-amber-300 border border-amber-500/40">DEMO</span>}
+                  {c.id === activeCaseId && <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-cyan-500/20 text-cyan-300 border border-cyan-500/40">CURRENT</span>}
                 </div>
 
                 <div className="flex items-center gap-3 text-xs font-mono text-slate-400">
@@ -106,15 +110,15 @@ export const CaseViewScreen: React.FC<Props> = ({
                   <span className="font-semibold text-cyan-300">{c.rootEntity}</span>
                 </div>
                 <div>
-                  <span className="text-slate-500 block">Blast Radius:</span>
-                  <span className="text-red-400 font-semibold">{c.compromisedCount} Compromised Nodes / {c.nodeCount} Total</span>
+                  <span className="text-slate-500 block">Graph:</span>
+                  <span className="text-red-400 font-semibold">{c.compromisedCount} high-risk / {c.nodeCount} nodes · {c.windowHours}h</span>
                 </div>
                 <div>
                   <span className="text-slate-500 block">Verdict:</span>
                   <span className="text-amber-400 font-semibold">{c.verdict || 'INVESTIGATING'}</span>
                 </div>
                 <div>
-                  <span className="text-slate-500 block">Ticket Integrations:</span>
+                  <span className="text-slate-500 block">Ticket handovers:</span>
                   <span className="text-emerald-400 font-semibold">
                     {c.pushedTo && c.pushedTo.length > 0 ? c.pushedTo.join(', ') : 'None yet'}
                   </span>
@@ -125,7 +129,7 @@ export const CaseViewScreen: React.FC<Props> = ({
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 pt-2 border-t border-slate-800/80 text-xs font-mono">
                 <div className="flex items-center gap-2 text-slate-400 truncate max-w-lg">
                   <Hash className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
-                  <span className="shrink-0 text-slate-500">EVIDENCE SHA-256:</span>
+                  <span className="shrink-0 text-slate-500">SNAPSHOT SHA-256:</span>
                   <span className="truncate text-slate-300">{c.sha256}</span>
                   <button
                     onClick={() => handleCopyHash(c.sha256 || '')}
@@ -140,10 +144,26 @@ export const CaseViewScreen: React.FC<Props> = ({
                     onClick={() => onOpenCase(c.id)}
                     className="px-3 py-1 bg-cyan-600 hover:bg-cyan-500 text-slate-950 font-bold rounded text-xs transition-colors"
                   >
-                    Resume Investigation Canvas
+                    {c.hasSnapshot ? 'Open saved snapshot' : 'Open entity'}
                   </button>
                 </div>
               </div>
+
+              {c.notes && <p className="text-xs text-slate-400">{c.notes}</p>}
+
+              {(c.evidence || []).length > 0 && (
+                <div className="pt-2 border-t border-slate-800/80 space-y-1 text-[11px] font-mono">
+                  <div className="text-slate-500">REGISTERED EVIDENCE:</div>
+                  {(c.evidence || []).map(ev => (
+                    <div key={ev.sha256 + ev.createdAt} className="flex flex-wrap items-center gap-2 text-slate-300">
+                      <Video className="w-3 h-3 text-purple-400" />
+                      <span>{ev.fileName}</span>
+                      <span className="text-slate-500">{ev.mimeType} · {(ev.sizeBytes / 1048576).toFixed(2)} MB · {new Date(ev.createdAt).toLocaleString()}</span>
+                      <span className="text-slate-400 truncate max-w-[280px]" title={ev.sha256}>sha256 {ev.sha256}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           ))}
         </div>

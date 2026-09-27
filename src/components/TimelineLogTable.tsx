@@ -31,12 +31,15 @@ export const TimelineLogTable: React.FC<Props> = ({
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
 
-  // Filter edges based on search and status
-  const filteredEdges = edges.filter(e => {
-    const matchesSearch = 
-      e.action.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      e.source.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      e.target.toLowerCase().includes(searchTerm.toLowerCase()) ||
+  const nameOf = (id: string) => nodes.find(n => n.id === id)?.name || id;
+
+  // Filter edges based on search and status (newest first)
+  const filteredEdges = [...edges].sort((a, b) => a.hour - b.hour || (b.firstSeen || '').localeCompare(a.firstSeen || '')).filter(e => {
+    const term = searchTerm.toLowerCase();
+    const matchesSearch =
+      e.action.toLowerCase().includes(term) ||
+      nameOf(e.source).toLowerCase().includes(term) ||
+      nameOf(e.target).toLowerCase().includes(term) ||
       e.protocol.toLowerCase().includes(searchTerm.toLowerCase()) ||
       e.details.toLowerCase().includes(searchTerm.toLowerCase());
     
@@ -86,13 +89,13 @@ export const TimelineLogTable: React.FC<Props> = ({
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800">
         <div>
           <h3 className="text-base font-bold text-slate-100 flex items-center gap-2">
-            <span>48-Hour Chronological Security Telemetry Grid</span>
+            <span>Chronological Event Timeline</span>
             <span className="text-xs font-mono px-2 py-0.5 bg-slate-800 text-slate-400 rounded">
               {filteredEdges.length} Events
             </span>
           </h3>
           <p className="text-xs text-slate-400 mt-0.5">
-            Normalized SIEM, EDR, and IAM graph events buffered from Apache Kafka & Memgraph.
+            One row per graph edge (events aggregated by source, action and target). Newest first.
           </p>
         </div>
 
@@ -133,7 +136,7 @@ export const TimelineLogTable: React.FC<Props> = ({
         <table className="w-full text-left text-xs">
           <thead className="bg-slate-950/80 sticky top-0 border-b border-slate-800 text-slate-400 font-mono text-[11px] z-10">
             <tr>
-              <th className="py-2.5 px-4 font-semibold">OFFSET (T-MINUS)</th>
+              <th className="py-2.5 px-4 font-semibold">OFFSET / FIRST SEEN (UTC)</th>
               <th className="py-2.5 px-4 font-semibold">SEVERITY</th>
               <th className="py-2.5 px-4 font-semibold">ACTION / THREAT ACTIVITY</th>
               <th className="py-2.5 px-4 font-semibold">SOURCE ENTITY</th>
@@ -163,6 +166,7 @@ export const TimelineLogTable: React.FC<Props> = ({
                     >
                       T-{edge.hour.toString().padStart(2, '0')}:00h
                     </button>
+                    {edge.firstSeen && <div className="text-[10px] text-slate-500">{edge.firstSeen.replace('T', ' ').slice(0, 19)}</div>}
                   </td>
 
                   {/* Status */}
@@ -176,22 +180,22 @@ export const TimelineLogTable: React.FC<Props> = ({
                   </td>
 
                   {/* Source */}
-                  <td className="py-2.5 px-4 whitespace-nowrap">
+                  <td className="py-2.5 px-4 whitespace-nowrap max-w-[220px] truncate">
                     <button
                       onClick={() => handleEntityClick(edge.source)}
                       className="text-cyan-400 hover:underline"
                     >
-                      {edge.source}
+                      {nameOf(edge.source)}
                     </button>
                   </td>
 
                   {/* Target */}
-                  <td className="py-2.5 px-4 whitespace-nowrap">
+                  <td className="py-2.5 px-4 whitespace-nowrap max-w-[220px] truncate">
                     <button
                       onClick={() => handleEntityClick(edge.target)}
                       className="text-cyan-400 hover:underline"
                     >
-                      {edge.target}
+                      {nameOf(edge.target)}
                     </button>
                   </td>
 
@@ -203,7 +207,8 @@ export const TimelineLogTable: React.FC<Props> = ({
                   </td>
 
                   {/* Telemetry details */}
-                  <td className="py-2.5 px-4 text-slate-400 font-sans text-xs max-w-xs truncate">
+                  <td className="py-2.5 px-4 text-slate-400 font-sans text-xs max-w-xs truncate" title={`${edge.details}${edge.eventIds?.length ? `\nEvent IDs: ${edge.eventIds.join(', ')}` : ''}`}>
+                    <span className="font-mono text-slate-500 mr-1">{edge.eventCount}×</span>
                     {edge.details}
                   </td>
 

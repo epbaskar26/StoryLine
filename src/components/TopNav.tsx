@@ -15,18 +15,22 @@ import {
   Command,
   ChevronDown
 } from 'lucide-react';
-import { ViewTab, UserProfile } from '../types';
+import { ViewTab, UserProfile, EntitySummary } from '../types';
 
 interface Props {
   activeTab: ViewTab;
   onChangeTab: (tab: ViewTab) => void;
   selectedUser: UserProfile;
-  availableUsers: { id: string; username: string; fullName: string; riskScore: number; triggerEvent: string }[];
+  selectedKey: string;
+  availableUsers: EntitySummary[];
   onSelectUser: (userId: string) => void;
   onGenerateReplayClick: () => void;
   isRecording?: boolean;
   activeWindowDays: number;
   onChangeWindowDays: (days: number) => void;
+  t0: string;
+  showT0Picker: boolean;
+  onChangeT0: (t0: string) => void;
   isDarkMode: boolean;
   onToggleDarkMode: () => void;
   onOpenGlobalSearch?: () => void;
@@ -36,12 +40,16 @@ export const TopNav: React.FC<Props> = ({
   activeTab,
   onChangeTab,
   selectedUser,
+  selectedKey,
   availableUsers,
   onSelectUser,
   onGenerateReplayClick,
   isRecording = false,
   activeWindowDays,
   onChangeWindowDays,
+  t0,
+  showT0Picker,
+  onChangeT0,
   isDarkMode,
   onToggleDarkMode,
   onOpenGlobalSearch
@@ -173,15 +181,33 @@ export const TopNav: React.FC<Props> = ({
           </button>
         </div>
 
+        {/* T-0 picker (Splunk mode): historical datasets such as BOTS need an explicit end of window */}
+        {showT0Picker && (
+          <label className="flex items-center gap-1 text-[11px] font-mono text-slate-500" title="End of the investigation window (UTC). Leave empty for now.">
+            <span>T-0</span>
+            <input
+              type="datetime-local"
+              value={t0 ? t0.slice(0, 16) : ''}
+              onChange={(e) => onChangeT0(e.target.value ? `${e.target.value}:00Z` : '')}
+              className="bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700/80 rounded px-1.5 py-1 text-[11px] text-slate-800 dark:text-slate-200"
+            />
+          </label>
+        )}
+
         {/* User Identity Switcher */}
         <div className="relative">
           <select
-            value={selectedUser.username.replace(/[^a-z0-9]/g, '')}
+            value={selectedKey}
             onChange={(e) => onSelectUser(e.target.value)}
             className="appearance-none bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700/80 rounded-lg px-3 py-1.5 pr-7 text-xs font-mono text-slate-800 dark:text-slate-200 hover:border-slate-300 dark:hover:border-slate-600 focus:outline-none cursor-pointer"
           >
+            {!availableUsers.some(u => u.id === selectedKey) && (
+              <option value={selectedKey}>
+                {selectedUser.username} (Risk: {selectedUser.riskScore})
+              </option>
+            )}
             {availableUsers.map((u) => (
-              <option key={u.id} value={u.username.replace(/[^a-z0-9]/g, '')}>
+              <option key={u.id} value={u.id}>
                 {u.username} (Risk: {u.riskScore})
               </option>
             ))}
