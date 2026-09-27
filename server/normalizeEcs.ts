@@ -54,6 +54,7 @@ export function normalizeEcsDoc(doc: EcsDoc, id: string): NormalizedEvent | null
   const channel = (str(doc, 'winlog.channel') || '').toLowerCase();
   const provider = (str(doc, 'event.provider', 'winlog.provider_name') || '').toLowerCase();
   const isSysmon = channel.includes('sysmon') || provider.includes('sysmon');
+  const isPowerShell = channel.includes('powershell') || provider.includes('powershell');
   const dataset = str(doc, 'event.dataset', 'event.module') || (channel ? `winlog:${channel}` : 'ecs');
 
   let logonType = str(doc, 'winlog.event_data.LogonType');
@@ -85,7 +86,22 @@ export function normalizeEcsDoc(doc: EcsDoc, id: string): NormalizedEvent | null
 
   const outcome = (str(doc, 'event.outcome') || '').toLowerCase();
 
+  if (isPowerShell) {
+    // 4104 script block logging: the script text is the evidence. Other PowerShell events are ignored.
+    const text = str(doc, 'powershell.file.script_block_text', 'winlog.event_data.ScriptBlockText');
+    if (code !== '4104' || !text) return null;
+    ev.category = 'process';
+    ev.outcome = 'success';
+    ev.scriptBlock = true;
+    ev.source = 'PowerShell 4104 (script block)';
+    ev.user = bareUser(str(doc, 'user.name', 'winlog.user.name'));
+    ev.process = str(doc, 'process.executable') || 'powershell.exe';
+    ev.commandLine = text.slice(0, 32768);
+    return ev;
+  }
+
   if (isSysmon) {
+    ev.source = `Sysmon ${code}`;
     ev.user = bareUser(str(doc, 'user.name', 'winlog.event_data.User'));
     ev.process = str(doc, 'process.executable', 'winlog.event_data.Image');
     ev.parentProcess = str(doc, 'process.parent.executable', 'winlog.event_data.ParentImage');
@@ -107,9 +123,10 @@ export function normalizeEcsDoc(doc: EcsDoc, id: string): NormalizedEvent | null
     ev.outcome = 'failure';
     ev.user = bareUser(str(doc, 'winlog.event_data.TargetUserName', 'user.name'));
   } else if (code === '4688') {
+    ev.source = 'Security 4688';
     ev.category = 'process';
     ev.outcome = 'success';
-    ev.user = bareUser(str(doc, 'winlog.event_data.SubjectUserName', 'user.name'));
+    ev.user = bareUser(str(doc, 'winlog.event_data.SubjectUserName', 'user.name', 'winlog.user.name'));
     ev.process = str(doc, 'process.executable', 'winlog.event_data.NewProcessName');
     ev.parentProcess = str(doc, 'process.parent.executable', 'winlog.event_data.ParentProcessName');
     ev.commandLine = str(doc, 'process.command_line', 'winlog.event_data.CommandLine');

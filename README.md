@@ -57,6 +57,16 @@ WatchMe reads ECS fields (Winlogbeat's ingest pipelines) and falls back to raw `
 
 **No Elastic available?** `npm run mock:elastic` starts a mock of the search API on port 9200 with a planted attack for user `epbas`, relative to the current time.
 
+## Investigation features
+
+- **Attack Path** (default): linear, time-ordered path with revisit tags, command summaries under process steps, and hover details.
+- **AI Storyline**: attack phases with explanations; every step cites the evidence. Uses Gemini or a local Ollama model, or a rule-based fallback. Approve to freeze it into the case.
+- **Relationship Graph** and **Event Timeline**.
+- **Notes**: hypotheses, verdicts, assignment, closure and approvals (append-only).
+- **Window bar**: the window is frozen after the first load; edit start/end, re-query, or switch to Live (30 s refresh).
+- **Assign & Close**: disposition and closure notes, recorded on the case.
+- **Search graphs**: build a graph from any log search (Integrations query console, Ctrl+K, or "Graph all activity on this host").
+
 ## How it works
 
 ```
@@ -69,6 +79,8 @@ Browser (React + canvas) ──> server.ts (Express API)
                                 ├── server/graphBuilder.ts  events -> nodes, edges, milestones (opaque ids)
                                 ├── server/risk.ts          explainable indicators (spec section 6)
                                 ├── server/sanitize.ts      tokenization, citation audit, fallback summary
+                                ├── server/ai.ts            AI provider: Gemini or Ollama (local)
+                                ├── server/storyline.ts     AI Storyline: tokenized steps in, validated citations out
                                 └── server/store.ts         PostgreSQL (DATABASE_URL) or in-memory
 ```
 

@@ -192,7 +192,7 @@ export function evaluateIndicators(
         mitreTactic: 'T1005',
         description: `${Math.max(...hot.map(h => h.length))} file events in one hour (threshold ${threshold})`,
         eventIds: cap(ids),
-        edgeKeys: edgesFor(ids, ['ACCESSED']),
+        edgeKeys: edgesFor(ids, ['ACCESSED', 'WROTE']),
         severity: 'anomalous',
       });
     }
@@ -213,7 +213,7 @@ export function evaluateIndicators(
   }
 
   // 8. Encoded PowerShell (WatchMe extension beyond the spec's indicator list)
-  const encoded = events.filter(e => e.category === 'process' && e.commandLine && /powershell|pwsh/i.test(e.commandLine) && /\s-(e|en|enc|enco|encod|encode|encoded|encodedcommand)\s/i.test(e.commandLine + ' '));
+  const encoded = events.filter(e => e.category === 'process' && !e.scriptBlock && e.commandLine && /powershell|pwsh/i.test(e.commandLine) && /\s-(e|en|enc|enco|encod|encode|encoded|encodedcommand)\s/i.test(e.commandLine + ' '));
   if (encoded.length) {
     const ids = encoded.map(e => e.id);
     out.push({
@@ -222,7 +222,7 @@ export function evaluateIndicators(
       mitreTactic: 'T1059.001',
       description: `${encoded.length} PowerShell execution(s) with an encoded command line`,
       eventIds: cap(ids),
-      edgeKeys: edgesFor(ids, ['EXECUTED', 'RAN_ON']),
+      edgeKeys: edgesFor(ids, ['EXECUTED', 'SPAWNED']),
       severity: 'critical',
     });
   }

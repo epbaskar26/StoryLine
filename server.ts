@@ -1,17 +1,18 @@
 import express, { type Request, type Response, type NextFunction } from 'express';
 import { createServer as createViteServer } from 'vite';
-import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import crypto from 'crypto';
 
-import type { UserProfile, WatchlistItem, CaseRecord, EntitySummary, SecurityNode, SecurityEdge, SystemStatus, EvidenceRecord } from './src/types';
+import type { UserProfile, WatchlistItem, CaseRecord, EntitySummary, SecurityNode, SecurityEdge, SystemStatus, EvidenceRecord, InvestigationNote, NoteKind, Disposition, Storyline, SecurityMilestone, ContributingFactor } from './src/types';
 import { DEMO_USERS, DEMO_WATCHLIST, DEMO_CASES, DEMO_AUDIT, DEFAULT_ADMIN_CONFIG, type AdminConfig, type ConnectorConfig } from './server/demoData';
 import { assertSafeEntity } from './server/splunk';
 import { loadLogSource } from './server/sources';
 import { buildProfile, opaqueId, type AlertRecord } from './server/graphBuilder';
 import { tokenizeProfile, rehydrate, auditCitations, deterministicSummary } from './server/sanitize';
+import { loadAiProvider, type AiProvider } from './server/ai';
+import { generateStoryline, storylineHash } from './server/storyline';
 import { createStore } from './server/store';
 
 dotenv.config({ path: ['.env.local', '.env'] });
@@ -35,7 +36,6 @@ const ANALYST = process.env.WATCHME_ANALYST || 'local.analyst';
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || '';
 const BASELINE_DAYS = parseInt(process.env.BASELINE_DAYS || '30', 10);
 const DEFAULT_T0 = process.env.DEFAULT_T0 || ''; // e.g. 2018-08-21T00:00:00Z for BOTS data
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
 const CACHE_TTL_MS = parseInt(process.env.GRAPH_CACHE_TTL_MS || '300000', 10);
 const HOUR_MS = 3_600_000;
 
@@ -43,10 +43,14 @@ const app = express();
 app.disable('x-powered-by');
 app.use(express.json({ limit: '5mb' }));
 
-let ai: GoogleGenAI | null = null;
-if (process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== 'MY_GEMINI_API_KEY') {
-  ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+let ai: AiProvider | null = null;
+try {
+  ai = loadAiProvider();
+} catch (err: any) {
+  console.error(err.message);
+  process.exit(1);
 }
+const aiLabel = () => (ai ? `${ai.kind === 'ollama' ? 'Ollama (local)' : 'Gemini'} ${ai.model}` : 'deterministic (no AI provider configured)');
 
 const store = createStore();
 
@@ -77,12 +81,32 @@ function entityKeyOf(raw: string): string {
   }
 }
 
+const MAX_WINDOW_HOURS = 168;
+
+// Window = [t0 - windowHours, t0]. t0 empty means "now". windowHours comes from windowHours, from, or windowDays.
+// Notes and cases belong to an investigation: an entity key, or "search:<query>" for search graphs
+function investigationKeyOf(raw: unknown): string {
+  const v = String(raw || '').trim();
+  if (v.startsWith('search:')) return v.slice(0, 300);
+  return entityKeyOf(v);
+}
+
 function parseWindow(req: Request): { windowHours: number; t0Ms: number } {
-  const days = Math.min(7, Math.max(1, parseInt(String(req.query.windowDays ?? req.body?.windowDays ?? '2'), 10) || 2));
+  const param = (k: string) => String((req.query as any)[k] ?? req.body?.[k] ?? '');
   // Empty strings mean "not set": fall back to DEFAULT_T0, then to now
-  const t0Raw = String(req.query.t0 || req.body?.t0 || DEFAULT_T0 || '');
+  const t0Raw = param('t0') || DEFAULT_T0;
   const t0Ms = t0Raw ? Date.parse(t0Raw) : Date.now();
   if (!Number.isFinite(t0Ms)) throw new HttpError(400, `Invalid t0 "${t0Raw}" (use ISO 8601, e.g. 2018-08-21T00:00:00Z)`);
+  const clampHours = (h: number) => Math.min(MAX_WINDOW_HOURS, Math.max(1, Math.ceil(h)));
+  const fromRaw = param('from');
+  if (fromRaw) {
+    const fromMs = Date.parse(fromRaw);
+    if (!Number.isFinite(fromMs) || fromMs >= t0Ms) throw new HttpError(400, 'from must be an ISO time before the end of the window');
+    return { windowHours: clampHours((t0Ms - fromMs) / HOUR_MS), t0Ms };
+  }
+  const hours = parseInt(param('windowHours'), 10);
+  if (Number.isFinite(hours) && hours > 0) return { windowHours: clampHours(hours), t0Ms };
+  const days = Math.min(7, Math.max(1, parseInt(param('windowDays') || '2', 10) || 2));
   return { windowHours: days * 24, t0Ms };
 }
 
@@ -128,6 +152,19 @@ function alertToGraph(al: AlertRecord, rootId: string, t0Ms: number, windowHours
 }
 
 async function buildDemoProfile(entityKey: string, windowHours: number, t0Ms: number): Promise<UserProfile> {
+  const p = demoProfileSync(entityKey, t0Ms);
+  const demoHours = 48;
+  if (windowHours !== demoHours) p.notes!.push('The demo dataset only covers 48 hours; the 7-day window applies to live data.');
+  const rootId = p.rootId || p.id;
+  for (const al of await store.listAlerts(entityKey)) {
+    const { node, edge } = alertToGraph(al, rootId, t0Ms, demoHours);
+    p.nodes.push(node);
+    p.edges.push(edge);
+  }
+  return p;
+}
+
+function demoProfileSync(entityKey: string, t0Ms: number): UserProfile {
   const base = DEMO_USERS[entityKey];
   if (!base) throw new HttpError(404, `Unknown entity "${entityKey}". Demo mode only contains: ${Object.keys(DEMO_USERS).join(', ')}.`);
   const p: UserProfile = JSON.parse(JSON.stringify(base));
@@ -135,24 +172,26 @@ async function buildDemoProfile(entityKey: string, windowHours: number, t0Ms: nu
   p.dataSource = 'demo';
   p.windowHours = demoHours;
   p.t0 = new Date(t0Ms).toISOString();
-  p.nodes.forEach(n => { n.firstSeen = new Date(t0Ms - n.firstSeenHour * HOUR_MS).toISOString(); });
+  // Demo times are stored as hour offsets ("H42" = 42 h before the end of the window)
+  const demoTime = (v: string) => (/^H\d+(\.\d+)?$/.test(v) ? new Date(t0Ms - parseFloat(v.slice(1)) * HOUR_MS).toISOString() : v);
+  p.nodes.forEach(n => {
+    n.firstSeen = new Date(t0Ms - n.firstSeenHour * HOUR_MS).toISOString();
+    n.executions?.forEach(x => { x.ts = demoTime(x.ts); if (x.lastTs) x.lastTs = demoTime(x.lastTs); });
+  });
   p.edges.forEach(e => { e.firstSeen = new Date(t0Ms - e.hour * HOUR_MS).toISOString(); });
+  p.windowStart = new Date(t0Ms - demoHours * HOUR_MS).toISOString();
+  p.kind = 'entity';
   // Replace the readable demo ids (u_jsmith, app_hr...) with opaque ids, as real graphs use,
   // so ids can be cited to the AI model without revealing entity names.
   const idMap = new Map(p.nodes.map(n => [n.id, opaqueId(n.type, `${n.type}:${n.name.toLowerCase()}`)]));
+  const rootOld = p.nodes.find(n => n.type === 'user')?.id;
   p.nodes.forEach(n => { n.id = idMap.get(n.id)!; });
+  if (rootOld) p.rootId = idMap.get(rootOld);
   p.edges.forEach(e => { e.source = idMap.get(e.source) || e.source; e.target = idMap.get(e.target) || e.target; });
   // Link demo factors to the edges that carry their event ids
   p.contributingFactors.forEach(f => { f.edgeIds = p.edges.filter(e => (e.eventIds || []).some(id => f.eventIds.includes(id))).map(e => e.id); });
   p.notes = ['DEMO DATA: fictional users, hosts and events. Set DATA_SOURCE=splunk or elastic to investigate real logs.'];
-  if (windowHours !== demoHours) p.notes.push('The demo dataset only covers 48 hours; the 7-day window applies to live data.');
   p.totalEventCount = p.edges.reduce((s, e) => s + e.eventCount, 0);
-  const rootId = p.nodes.find(n => n.type === 'user')?.id || p.id;
-  for (const al of await store.listAlerts(entityKey)) {
-    const { node, edge } = alertToGraph(al, rootId, t0Ms, demoHours);
-    p.nodes.push(node);
-    p.edges.push(edge);
-  }
   return p;
 }
 
@@ -242,6 +281,8 @@ app.get('/api/status', asyncRoute(async (_req, res) => {
     queryLanguage: SOURCE?.queryLanguage ?? null,
     storage: store.kind,
     aiConfigured: !!ai,
+    aiProvider: ai ? ai.kind : 'none',
+    aiModel: ai ? ai.model : null,
     analyst: ANALYST,
     lastGraphBuildMs,
   };
@@ -326,6 +367,100 @@ app.delete('/api/watchlist/:id', asyncRoute(async (req, res) => {
 }));
 
 // ----------------- API: graph (FR-04, FR-06) -----------------
+// ----------------- API: graph from an analyst's log search -----------------
+const searchKey = (query: string) => `search:${crypto.createHash('sha1').update(query).digest('hex').slice(0, 12)}`;
+
+// Demo mode: search the demo graphs' entities, edges and command lines for every query term
+function buildDemoSearchProfile(query: string, t0Ms: number): UserProfile {
+  const terms = query
+    .split(/\s+(?:AND|&&)\s+|\s+/i)
+    .map(t => t.replace(/^[\w.]+:/, '').replace(/^["'(]+|["')]+$/g, '').toLowerCase())
+    .filter(t => t && !['and', 'or', 'not', '*'].includes(t));
+  const rootId = opaqueId('query', `query:${query.toLowerCase()}`);
+  const nodes = new Map<string, SecurityNode>();
+  const edges: SecurityEdge[] = [];
+  const milestones: SecurityMilestone[] = [];
+  const factors: ContributingFactor[] = [];
+  let riskScore = 0;
+  const demoHours = 48;
+  nodes.set(rootId, {
+    id: rootId, name: `Search: ${query.slice(0, 60)}`, type: 'query', riskScore: 0, riskBand: 'LOW', compromised: false,
+    classification: 'Log search', firstSeenHour: demoHours, firstSeen: new Date(t0Ms - demoHours * HOUR_MS).toISOString(), details: { Query: query },
+  });
+  for (const key of Object.keys(DEMO_USERS)) {
+    const p = demoProfileSync(key, t0Ms);
+    const byId = new Map(p.nodes.map(n => [n.id, n]));
+    const text = (n?: SecurityNode) => (n ? [n.name, n.classification || '', ...Object.values(n.details || {}), ...(n.executions || []).map(x => x.commandLine)].join(' ') : '');
+    const hits = p.edges.filter(e => {
+      const hay = `${e.type} ${e.protocol} ${e.details} ${text(byId.get(e.source))} ${text(byId.get(e.target))}`.toLowerCase();
+      return terms.length === 0 || terms.every(t => hay.includes(t));
+    });
+    if (!hits.length) continue;
+    const root = byId.get(p.rootId!)!;
+    for (const e of hits) {
+      for (const id of [e.source, e.target]) if (!nodes.has(id)) nodes.set(id, byId.get(id)!);
+      edges.push(e);
+    }
+    if (!nodes.has(root.id)) nodes.set(root.id, root);
+    const firstHour = Math.max(...hits.map(e => e.hour));
+    edges.push({
+      id: `m_${root.id}`, source: rootId, target: root.id, action: 'MATCHED', type: 'MATCHED', protocol: 'Search match', hour: firstHour,
+      firstSeen: new Date(t0Ms - firstHour * HOUR_MS).toISOString(), eventCount: hits.reduce((n, e) => n + e.eventCount, 0), status: 'allowed',
+      details: `${hits.length} matching edge(s) for ${root.name}`,
+    });
+    const hitIds = new Set(hits.map(e => e.id));
+    factors.push(...p.contributingFactors.filter(f => (f.edgeIds || []).some(id => hitIds.has(id))).map(f => ({ ...f, description: `${root.name}: ${f.description}` })));
+    milestones.push(...p.milestones.filter(m => !m.edgeId || hitIds.has(m.edgeId)));
+    riskScore = Math.max(riskScore, p.riskScore);
+  }
+  if (edges.length === 0) throw new HttpError(404, `No demo events match "${query}". Try a host, user, process or domain name, e.g. powershell or THINKPAD-MR-20.`);
+  const band = riskScore >= 70 ? 'HIGH' : riskScore >= 40 ? 'MEDIUM' : 'LOW';
+  return {
+    id: rootId, canonicalId: rootId.toUpperCase(), username: `search`, fullName: `Log search: ${query}`, role: 'Log search', department: '-',
+    baselineLocation: '-', device: '-', riskScore, riskBand: band, alertSummary: factors.slice(0, 3).map(f => f.indicator).join(' · ') || 'No risk indicators in the results',
+    triggerEvent: 'Analyst log search', aliases: [], nodes: Array.from(nodes.values()), edges: edges.sort((a, b) => b.hour - a.hour), milestones: milestones.sort((a, b) => b.hour - a.hour), contributingFactors: factors,
+    dataSource: 'demo', t0: new Date(t0Ms).toISOString(), windowHours: demoHours, windowStart: new Date(t0Ms - demoHours * HOUR_MS).toISOString(),
+    totalEventCount: edges.reduce((n, e) => n + e.eventCount, 0), rootId, kind: 'search', query,
+    notes: ['DEMO DATA: search runs over the fictional demo graphs.', 'Search graph: every matching identity is shown.'],
+  };
+}
+
+async function getSearchProfile(query: string, windowHours: number, t0Ms: number, force = false): Promise<{ profile: UserProfile; buildMs: number; cached: boolean }> {
+  const key = cacheKey(searchKey(query), windowHours, t0Ms);
+  const hit = profileCache.get(key);
+  if (!force && hit && Date.now() - hit.builtAt < CACHE_TTL_MS) return { profile: hit.profile, buildMs: 0, cached: true };
+  const started = Date.now();
+  let profile: UserProfile;
+  if (DATA_SOURCE === 'demo') {
+    profile = buildDemoSearchProfile(query, t0Ms);
+  } else {
+    const src = SOURCE!;
+    const start = t0Ms - windowHours * HOUR_MS;
+    const limit = Math.min(src.maxEvents, 10000);
+    const events = await src.searchEvents(query, start, t0Ms, limit);
+    if (!events.length) throw new HttpError(404, `No ${src.label} events match "${query}" between ${new Date(start).toISOString()} and ${new Date(t0Ms).toISOString()}.`);
+    const config = await store.getConfig();
+    profile = buildProfile({
+      username: 'search', events, alerts: [], t0Ms, windowHours, baseline: null, crownJewelTags: config.crownJewelTags,
+      vipEntities: config.vipEntities, riskWeights: config.riskWeights, dataSource: src.kind, sourceLabel: src.label, searchMode: true, query,
+    });
+    if (events.length >= limit) profile.notes?.push(`The search returned the maximum of ${limit} events; narrow the query or the time range to see everything.`);
+  }
+  const buildMs = Date.now() - started;
+  profileCache.set(key, { profile, builtAt: Date.now() });
+  return { profile, buildMs, cached: false };
+}
+
+app.get('/api/graph/search', asyncRoute(async (req, res) => {
+  const query = String(req.query.q || '').trim().slice(0, 2000);
+  if (!query) throw new HttpError(400, 'q (the search query) is required');
+  const { windowHours, t0Ms } = parseWindow(req);
+  const { profile, buildMs, cached } = await getSearchProfile(query, windowHours, t0Ms, req.query.refresh === '1');
+  const withNotes = await withAnnotations(searchKey(query), profile);
+  await audit('VIEW_SEARCH_GRAPH', searchKey(query), `Search graph for "${query.slice(0, 120)}" (${profile.nodes.length} nodes, ${profile.edges.length} edges${cached ? ', cached' : ''})`);
+  res.json({ profile: withNotes, investigationKey: searchKey(query), windowHours: profile.windowHours, buildMs, cached });
+}));
+
 app.get('/api/graph/:userId', asyncRoute(async (req, res) => {
   const entityKey = entityKeyOf(req.params.userId);
   const { windowHours, t0Ms } = parseWindow(req);
@@ -336,10 +471,11 @@ app.get('/api/graph/:userId', asyncRoute(async (req, res) => {
 }));
 
 app.post('/api/graph/expand', asyncRoute(async (req, res) => {
-  const entityKey = entityKeyOf(req.body.userKey);
+  const searchQuery = typeof req.body.searchQuery === 'string' ? req.body.searchQuery.trim() : '';
+  const entityKey = searchQuery ? searchKey(searchQuery) : entityKeyOf(req.body.userKey);
   const nodeId = String(req.body.nodeId || '');
   const { windowHours, t0Ms } = parseWindow(req);
-  const { profile } = await getProfile(entityKey, windowHours, t0Ms);
+  const { profile } = searchQuery ? await getSearchProfile(searchQuery, windowHours, t0Ms) : await getProfile(entityKey, windowHours, t0Ms);
   const node = profile.nodes.find(n => n.id === nodeId);
   if (!node) throw new HttpError(404, `Node ${nodeId} is not in the current graph`);
 
@@ -386,21 +522,70 @@ app.post('/api/graph/expand', asyncRoute(async (req, res) => {
 
 // ----------------- API: annotations (FR-08) & feedback (FR-23) -----------------
 app.post('/api/annotations', asyncRoute(async (req, res) => {
-  const entityKey = entityKeyOf(req.body.entityKey);
+  const entityKey = investigationKeyOf(req.body.entityKey);
   const nodeId = String(req.body.nodeId || '').slice(0, 64);
   const text = String(req.body.text || '').slice(0, 2000);
   if (!nodeId) throw new HttpError(400, 'nodeId is required');
   await store.upsertAnnotation({ entityKey, nodeId, text, analyst: ANALYST, updatedAt: new Date().toISOString() });
   await audit('ANNOTATE_NODE', entityKey, `${text ? 'Set' : 'Cleared'} annotation on ${nodeId}`);
-  res.json({ success: true });
+  // Every saved hypothesis is also kept in the investigation notes (the annotation shows only the latest)
+  const note = text.trim()
+    ? await addNote({ entityKey, nodeId, nodeName: req.body.nodeName ? clipText(req.body.nodeName, 300) : undefined, caseId: req.body.caseId ? clipText(req.body.caseId, 64) : undefined, kind: 'HYPOTHESIS', text: text.trim() })
+    : null;
+  res.json({ success: true, note });
 }));
 
 app.post('/api/feedback', asyncRoute(async (req, res) => {
   const verdict = String(req.body.verdict || '');
   if (!['BENIGN', 'MALICIOUS'].includes(verdict)) throw new HttpError(400, 'verdict must be BENIGN or MALICIOUS');
-  const targetId = String(req.body.targetId || '').slice(0, 64);
-  await audit('SET_VERDICT', targetId, `Analyst tagged ${targetId} as ${verdict}: ${String(req.body.note || 'No notes').slice(0, 300)}`);
-  res.json({ success: true, message: 'Verdict recorded in the audit log. (Suppression and baseline tuning from feedback are not implemented yet.)' });
+  const targetId = clipText(req.body.targetId, 64);
+  if (!targetId) throw new HttpError(400, 'targetId is required');
+  const reason = clipText(req.body.note, 2000).trim();
+  if (!reason) throw new HttpError(400, 'A reason is required for a verdict');
+  const nodeName = clipText(req.body.nodeName || targetId, 300);
+  const note = await addNote({
+    entityKey: investigationKeyOf(req.body.entityKey),
+    caseId: req.body.caseId ? clipText(req.body.caseId, 64) : undefined,
+    nodeId: targetId,
+    nodeName,
+    kind: 'VERDICT',
+    verdict: verdict as 'BENIGN' | 'MALICIOUS',
+    text: reason,
+  });
+  await audit('SET_VERDICT', note.entityKey, `Analyst marked ${nodeName} (${targetId}) as ${verdict}: ${reason.slice(0, 300)}`);
+  res.json({ success: true, note, message: 'Verdict saved to the investigation notes and the audit log. (Suppression and baseline tuning from feedback are not implemented yet.)' });
+}));
+
+// ----------------- Investigation notes -----------------
+async function addNote(n: Omit<InvestigationNote, 'id' | 'createdAt' | 'analyst'>): Promise<InvestigationNote> {
+  const note: InvestigationNote = { ...n, id: newId('note'), analyst: ANALYST, createdAt: new Date().toISOString() };
+  await store.addNote(note);
+  return note;
+}
+
+const clipText = (v: unknown, n: number) => String(v ?? '').slice(0, n);
+
+app.get('/api/notes', asyncRoute(async (req, res) => {
+  const entityKey = req.query.entityKey ? String(req.query.entityKey).slice(0, 300) : undefined;
+  const caseId = req.query.caseId ? String(req.query.caseId).slice(0, 64) : undefined;
+  if (!entityKey && !caseId) throw new HttpError(400, 'entityKey or caseId is required');
+  res.json({ notes: await store.listNotes({ entityKey, caseId }) });
+}));
+
+app.post('/api/notes', asyncRoute(async (req, res) => {
+  const kind: NoteKind = req.body.kind === 'HYPOTHESIS' ? 'HYPOTHESIS' : 'NOTE';
+  const text = clipText(req.body.text, 4000).trim();
+  if (!text) throw new HttpError(400, 'text is required');
+  const note = await addNote({
+    entityKey: investigationKeyOf(req.body.entityKey),
+    caseId: req.body.caseId ? clipText(req.body.caseId, 64) : undefined,
+    nodeId: req.body.nodeId ? clipText(req.body.nodeId, 64) : undefined,
+    nodeName: req.body.nodeName ? clipText(req.body.nodeName, 300) : undefined,
+    kind,
+    text,
+  });
+  await audit(`ADD_${kind}`, note.entityKey, `${kind === 'HYPOTHESIS' ? 'Hypothesis' : 'Note'}${note.nodeName ? ` on ${note.nodeName}` : ''}: ${text.slice(0, 200)}`);
+  res.json({ success: true, note });
 }));
 
 // ----------------- API: cases (FR-19, FR-20) -----------------
@@ -415,7 +600,7 @@ app.get('/api/cases/:id', asyncRoute(async (req, res) => {
 }));
 
 app.post('/api/cases', asyncRoute(async (req, res) => {
-  const entityKey = entityKeyOf(req.body.entityKey || req.body.userKey);
+  const entityKey = investigationKeyOf(req.body.entityKey || req.body.userKey);
   const clientProfile = req.body.profile as UserProfile | undefined;
   const snapshot: UserProfile | null = clientProfile && Array.isArray(clientProfile.nodes) ? clientProfile : latestCachedProfile(entityKey);
   if (!snapshot) throw new HttpError(400, 'No graph loaded for this entity; open it before saving a case.');
@@ -446,15 +631,81 @@ app.post('/api/cases', asyncRoute(async (req, res) => {
   res.json({ success: true, case: record });
 }));
 
+const DISPOSITIONS: Disposition[] = ['TRUE_POSITIVE_MALICIOUS', 'TRUE_POSITIVE_BENIGN', 'FALSE_POSITIVE', 'INCONCLUSIVE', 'DUPLICATE'];
+const DISPOSITION_LABEL: Record<Disposition, string> = {
+  TRUE_POSITIVE_MALICIOUS: 'True positive (malicious)', TRUE_POSITIVE_BENIGN: 'True positive (authorized / benign)',
+  FALSE_POSITIVE: 'False positive', INCONCLUSIVE: 'Inconclusive', DUPLICATE: 'Duplicate',
+};
+
+// Assign, change status, and close (with disposition and closure notes). Each change is recorded as a note.
 app.patch('/api/cases/:id', asyncRoute(async (req, res) => {
+  const existing = await store.getCase(req.params.id);
+  if (!existing) throw new HttpError(404, 'Case not found');
+  const before = existing.record;
   const patch: Partial<CaseRecord> = {};
   if (['OPEN', 'INVESTIGATING', 'CONTAINED', 'CLOSED'].includes(req.body.status)) patch.status = req.body.status;
   if (['BENIGN', 'SUSPICIOUS', 'MALICIOUS'].includes(req.body.verdict)) patch.verdict = req.body.verdict;
   if (typeof req.body.notes === 'string') patch.notes = req.body.notes.slice(0, 2000);
+  if (typeof req.body.assignee === 'string') {
+    const a = req.body.assignee.trim().slice(0, 100);
+    if (!/^[\w.@ -]{1,100}$/.test(a)) throw new HttpError(400, 'assignee must be a name or email');
+    patch.assignee = a;
+  }
+  if (req.body.disposition !== undefined) {
+    if (!DISPOSITIONS.includes(req.body.disposition)) throw new HttpError(400, `disposition must be one of ${DISPOSITIONS.join(', ')}`);
+    patch.disposition = req.body.disposition;
+  }
+  if (typeof req.body.closureNotes === 'string') patch.closureNotes = req.body.closureNotes.trim().slice(0, 4000);
+
+  const closing = patch.status === 'CLOSED' && before.status !== 'CLOSED';
+  const reopening = patch.status && patch.status !== 'CLOSED' && before.status === 'CLOSED';
+  if (closing) {
+    if (!(patch.disposition || before.disposition)) throw new HttpError(400, 'Choose a disposition to close the investigation');
+    if (!(patch.closureNotes || '').trim()) throw new HttpError(400, 'Closure notes are required to close the investigation');
+    patch.closedAt = new Date().toISOString();
+    patch.closedBy = ANALYST;
+    if (!patch.verdict) {
+      const d = patch.disposition || before.disposition;
+      patch.verdict = d === 'TRUE_POSITIVE_MALICIOUS' ? 'MALICIOUS' : d === 'INCONCLUSIVE' ? 'SUSPICIOUS' : 'BENIGN';
+    }
+  }
+  if (reopening) { patch.closedAt = ''; patch.closedBy = ''; }
+
   const updated = await store.updateCase(req.params.id, patch);
   if (!updated) throw new HttpError(404, 'Case not found');
-  await audit('UPDATE_CASE', updated.caseRef, `Updated ${Object.keys(patch).join(', ') || 'nothing'}`);
-  res.json({ success: true, case: updated });
+  const entityKey = updated.entityKey || updated.rootEntity;
+  const notes: InvestigationNote[] = [];
+  if (patch.assignee && patch.assignee !== before.assignee) {
+    notes.push(await addNote({ entityKey, caseId: updated.id, kind: 'ASSIGNMENT', text: `Assigned ${updated.caseRef} to ${patch.assignee}${before.assignee ? ` (was ${before.assignee})` : ''}.` }));
+  }
+  if (closing) {
+    notes.push(await addNote({ entityKey, caseId: updated.id, kind: 'CLOSURE', text: `Closed ${updated.caseRef} as ${DISPOSITION_LABEL[updated.disposition!]}. ${updated.closureNotes}` }));
+  } else if (reopening) {
+    notes.push(await addNote({ entityKey, caseId: updated.id, kind: 'NOTE', text: `Reopened ${updated.caseRef} (status ${updated.status}).` }));
+  } else if (patch.status && patch.status !== before.status) {
+    notes.push(await addNote({ entityKey, caseId: updated.id, kind: 'NOTE', text: `Status changed from ${before.status} to ${patch.status}.` }));
+  }
+  await audit(closing ? 'CLOSE_CASE' : 'UPDATE_CASE', updated.caseRef, closing
+    ? `Closed as ${updated.disposition} by ${ANALYST}; assignee ${updated.assignee || '-'}`
+    : `Updated ${Object.keys(patch).join(', ') || 'nothing'}`);
+  res.json({ success: true, case: updated, notes });
+}));
+
+// Freeze an approved AI storyline into the case (the analyst's approval makes it case content)
+app.post('/api/cases/:id/storyline', asyncRoute(async (req, res) => {
+  const s = req.body.storyline as Storyline | undefined;
+  if (!s || !Array.isArray(s.phases) || typeof s.sha256 !== 'string') throw new HttpError(400, 'storyline is required');
+  if (storylineHash(s) !== s.sha256) throw new HttpError(400, 'Storyline content does not match its hash; regenerate it before approving');
+  const c = await store.getCase(req.params.id);
+  if (!c) throw new HttpError(404, 'Case not found');
+  const approved: Storyline = { ...s, approvedBy: ANALYST, approvedAt: new Date().toISOString() };
+  const updated = await store.updateCase(req.params.id, { storyline: approved });
+  const note = await addNote({
+    entityKey: c.record.entityKey || c.record.rootEntity, caseId: c.record.id, kind: 'AI_STORYLINE',
+    text: `Approved storyline (${s.engine}): ${s.headline}. ${s.phases.map(p => p.name).join(' → ')}`.slice(0, 2000),
+  });
+  await audit('APPROVE_AI_STORYLINE', c.record.caseRef, `${s.engine}; ${s.phases.length} phase(s), ${s.droppedSteps} uncited step(s) dropped`, s.sha256);
+  res.json({ success: true, case: updated, note });
 }));
 
 // Register an evidence file (hash computed in the browser) against a case
@@ -771,23 +1022,16 @@ app.post('/api/gemini/case-summary', asyncRoute(async (req, res) => {
 
   if (ai) {
     try {
-      const call = ai.models.generateContent({
-        model: GEMINI_MODEL,
-        contents: `Write the case summary for this sanitized graph context:\n\n${JSON.stringify(ctx.payload, null, 2)}`,
-        config: { systemInstruction: SYSTEM_INSTRUCTION, temperature: 0.2 },
-      });
-      const timeout = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('AI request timed out after 30 s')), 30000));
-      const response = await Promise.race([call, timeout]);
-      summary = response.text || '';
+      summary = await ai.generate(SYSTEM_INSTRUCTION, `Write the case summary for this sanitized graph context:\n\n${JSON.stringify(ctx.payload, null, 2)}`, { temperature: 0.2 });
       sentToModel = true;
-      engine = `${GEMINI_MODEL} (${privacyMode ? 'tokenized context' : 'PASSTHROUGH: real names sent'})`;
+      engine = `${aiLabel()} (${privacyMode ? 'tokenized context' : 'PASSTHROUGH: real names sent'})`;
     } catch (err: any) {
       modelError = err.message || String(err);
       console.warn('AI summary failed, using deterministic summary:', modelError);
     }
   }
   if (!summary) {
-    summary = deterministicSummary(profile);
+    summary = deterministicSummary(profile, typeof req.body.tz === 'string' ? req.body.tz.slice(0, 64) : undefined);
     if (modelError) engine = `Deterministic summary (AI call failed: ${modelError})`;
   } else if (privacyMode) {
     summary = rehydrate(summary, ctx.nameByToken);
@@ -811,6 +1055,16 @@ app.post('/api/ai/approve', asyncRoute(async (req, res) => {
   const hash = String(req.body.summarySha256 || '').slice(0, 64);
   await audit('APPROVE_AI_SUMMARY', entity, 'Analyst approved AI summary for handover', /^[a-f0-9]{64}$/.test(hash) ? hash : undefined);
   res.json({ success: true });
+}));
+
+// AI Storyline (interpretation of the Attack Path; deterministic when no AI provider is configured)
+app.post('/api/ai/storyline', asyncRoute(async (req, res) => {
+  const profile = req.body.profile as UserProfile | undefined;
+  if (!profile || !Array.isArray(profile.nodes) || !Array.isArray(profile.edges)) throw new HttpError(400, 'profile with nodes and edges is required');
+  const privacyMode = req.body.privacyModeEnabled !== false;
+  const { storyline, sentPayload } = await generateStoryline(profile, ai, privacyMode);
+  await audit('GENERATE_AI_STORYLINE', profile.username, `${storyline.engine}; verdict ${storyline.verdict}; ${storyline.phases.length} phase(s); ${storyline.droppedSteps} uncited step(s) dropped${storyline.injectionWarnings.length ? `; ${storyline.injectionWarnings.length} injection warning(s)` : ''}`, storyline.sha256);
+  res.json({ storyline, sentPayload });
 }));
 
 // Unknown API routes return JSON 404s instead of falling through to the SPA
@@ -847,7 +1101,7 @@ async function startServer() {
     console.log(`WatchMe listening on http://${HOST}:${PORT}`);
     console.log(`  data source: ${DATA_SOURCE}${SOURCE ? ` (${SOURCE.connector.endpoint})` : ''}`);
     console.log(`  storage:     ${store.kind}${store.kind === 'memory' ? ' (cases and audit log are lost on restart; set DATABASE_URL for PostgreSQL)' : ''}`);
-    console.log(`  AI summary:  ${ai ? GEMINI_MODEL : 'deterministic (no GEMINI_API_KEY)'}`);
+    console.log(`  AI:          ${aiLabel()}`);
   });
 }
 

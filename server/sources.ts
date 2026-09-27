@@ -34,6 +34,7 @@ export interface LogSource {
   fetchEntityEvents(entity: string, fromMs: number, toMs: number): Promise<NormalizedEvent[]>;
   searchUsers(term: string, fromMs: number, toMs: number): Promise<{ user: string; count: number }[]>;
   runAdhocQuery(query: string, fromMs: number, toMs: number): Promise<AdhocRow[]>;
+  searchEvents(query: string, fromMs: number, toMs: number, limit: number): Promise<NormalizedEvent[]>;
   testConnection(): Promise<{ ok: boolean; message: string; latencyMs: number }>;
 }
 
@@ -75,6 +76,9 @@ export function splunkSource(cfg: splunk.SplunkConfig): LogSource {
         };
       });
     },
+    async searchEvents(query, from, to, limit) {
+      return normalizeRows(await splunk.searchEvents(cfg, query, s(from), s(to), limit));
+    },
     testConnection: () => splunk.testConnection(cfg),
   };
 }
@@ -97,6 +101,7 @@ export function elasticSource(cfg: elastic.ElasticConfig): LogSource {
     fetchEntityEvents: (entity, from, to) => elastic.fetchEntityEvents(cfg, entity, from, to),
     searchUsers: (term, from, to) => elastic.searchUsers(cfg, term, from, to),
     runAdhocQuery: (query, from, to) => elastic.runAdhocQuery(cfg, query, from, to),
+    searchEvents: (query, from, to, limit) => elastic.searchEvents(cfg, query, from, to, limit),
     testConnection: () => elastic.testConnection(cfg),
   };
 }

@@ -12,6 +12,7 @@ import {
   ChevronRight
 } from 'lucide-react';
 import { SecurityEdge, SecurityNode } from '../types';
+import { fmtLocal, fmtUtc, tzLabel } from '../timefmt';
 
 interface Props {
   edges: SecurityEdge[];
@@ -136,7 +137,7 @@ export const TimelineLogTable: React.FC<Props> = ({
         <table className="w-full text-left text-xs">
           <thead className="bg-slate-950/80 sticky top-0 border-b border-slate-800 text-slate-400 font-mono text-[11px] z-10">
             <tr>
-              <th className="py-2.5 px-4 font-semibold">OFFSET / FIRST SEEN (UTC)</th>
+              <th className="py-2.5 px-4 font-semibold">FIRST SEEN ({tzLabel()})</th>
               <th className="py-2.5 px-4 font-semibold">SEVERITY</th>
               <th className="py-2.5 px-4 font-semibold">ACTION / THREAT ACTIVITY</th>
               <th className="py-2.5 px-4 font-semibold">SOURCE ENTITY</th>
@@ -164,9 +165,9 @@ export const TimelineLogTable: React.FC<Props> = ({
                       title="Jump scrubber to this moment"
                       className="hover:text-cyan-300 underline underline-offset-2 decoration-slate-600 hover:decoration-cyan-400"
                     >
-                      T-{edge.hour.toString().padStart(2, '0')}:00h
+                      {fmtLocal(edge.firstSeen, { withSeconds: true })}
                     </button>
-                    {edge.firstSeen && <div className="text-[10px] text-slate-500">{edge.firstSeen.replace('T', ' ').slice(0, 19)}</div>}
+                    {edge.lastSeen && edge.lastSeen !== edge.firstSeen && <div className="text-[10px] text-slate-500" title={fmtUtc(edge.lastSeen)}>to {fmtLocal(edge.lastSeen)}</div>}
                   </td>
 
                   {/* Status */}
@@ -207,7 +208,7 @@ export const TimelineLogTable: React.FC<Props> = ({
                   </td>
 
                   {/* Telemetry details */}
-                  <td className="py-2.5 px-4 text-slate-400 font-sans text-xs max-w-xs truncate" title={`${edge.details}${edge.eventIds?.length ? `\nEvent IDs: ${edge.eventIds.join(', ')}` : ''}`}>
+                  <td className="py-2.5 px-4 text-slate-400 font-sans text-xs max-w-md whitespace-normal break-words select-text" title={`${edge.details}${edge.eventIds?.length ? `\nEvent IDs: ${edge.eventIds.join(', ')}` : ''}`}>
                     <span className="font-mono text-slate-500 mr-1">{edge.eventCount}×</span>
                     {edge.details}
                   </td>
@@ -218,7 +219,7 @@ export const TimelineLogTable: React.FC<Props> = ({
                       onClick={() => onJumpToHour(edge.hour)}
                       className="px-2 py-1 bg-slate-800 hover:bg-cyan-500 hover:text-slate-950 text-slate-300 rounded text-[10px] font-semibold transition-colors"
                     >
-                      Inspect T-{edge.hour}h
+                      Show on timeline
                     </button>
                   </td>
                 </tr>

@@ -1,7 +1,7 @@
 import React, { useEffect } from 'react';
 import { Play, Pause, RotateCcw, SkipForward, SkipBack, Clock, AlertTriangle, ChevronRight, Activity } from 'lucide-react';
 import { SecurityMilestone, SecurityEdge } from '../types';
-import { hourToUtc } from '../api';
+import { hourToLocal, hourToMs, fmtUtc, tzLabel } from '../timefmt';
 
 interface Props {
   currentHour: number; // windowHours to 0
@@ -87,11 +87,8 @@ export const TimeScrubber: React.FC<Props> = ({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [onTogglePlay, onChangeHour, milestones, currentHour]);
 
-  const formatHourLabel = (h: number) => {
-    const abs = hourToUtc(t0, h);
-    if (h === 0) return `T-00:00 (T-0)${abs ? ` · ${abs}` : ''}`;
-    return `T-${h.toString().padStart(2, '0')}:00${abs ? ` · ${abs}` : ''}`;
-  };
+  // Real time at a scrubber position (the analyst's time zone), e.g. "27 Sep 20:45 IST"
+  const formatHourLabel = (h: number) => hourToLocal(t0, h, { withZone: true }) || `${h} h before end`;
 
   // FR-11: event density histogram, computed from the graph's edges (event count by hour of first activity)
   const severityRank: Record<SecurityEdge['status'], number> = { allowed: 0, blocked: 1, anomalous: 2, critical: 3 };
@@ -130,8 +127,8 @@ export const TimeScrubber: React.FC<Props> = ({
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2 px-3 py-1.5 bg-slate-950 border border-slate-800 rounded-md font-mono text-xs">
             <Clock className="w-3.5 h-3.5 text-cyan-400" />
-            <span className="text-slate-400">OFFSET:</span>
-            <span className="text-cyan-300 font-semibold tabular-nums">{formatHourLabel(currentHour)}</span>
+            <span className="text-slate-400">TIME:</span>
+            <span className="text-cyan-300 font-semibold tabular-nums" title={fmtUtc(hourToMs(t0, currentHour))}>{formatHourLabel(currentHour)}</span>
           </div>
 
           {activeMilestone && (
@@ -148,6 +145,8 @@ export const TimeScrubber: React.FC<Props> = ({
         </div>
 
         <div className="flex items-center gap-4 text-xs font-mono text-slate-400">
+          <span title="Times are shown in your browser's time zone; hover a time for UTC">Times in {tzLabel()}</span>
+          <span className="text-slate-700">·</span>
           <div>
             <span>NODES: </span>
             <span className="text-slate-200 font-semibold tabular-nums">{visibleNodeCount}</span>
@@ -172,7 +171,7 @@ export const TimeScrubber: React.FC<Props> = ({
             <div
               key={idx}
               onClick={() => onChangeHour(bar.hour)}
-              title={`T-${bar.hour}:00h · ${bar.count} event(s) ${bar.milestone ? `· ${bar.milestone.title}` : ''}`}
+              title={`${hourToLocal(t0, bar.hour)} · ${bar.count} event(s)${bar.milestone ? ` · ${bar.milestone.title}` : ''}`}
               className="flex-1 h-full flex items-end cursor-pointer group"
             >
               <div
@@ -206,7 +205,7 @@ export const TimeScrubber: React.FC<Props> = ({
               <button
                 key={`${m.timeLabel}-${m.title}`}
                 onClick={() => onChangeHour(m.hour)}
-                title={`${m.timeLabel}: ${m.title} (${m.mitreTactic})`}
+                title={`${hourToLocal(t0, m.hour)}: ${m.title} (${m.mitreTactic})`}
                 className="absolute top-0 -translate-x-1/2 flex flex-col items-center group cursor-pointer"
                 style={{ left: `${leftPct}%` }}
               >
@@ -237,8 +236,8 @@ export const TimeScrubber: React.FC<Props> = ({
           {[1, 0.75, 0.5, 0.25, 0].map(f => {
             const h = Math.round(windowHours * f);
             return (
-              <span key={f} className={h === 0 ? 'text-cyan-400 font-semibold' : ''} title={hourToUtc(t0, h)}>
-                T-{String(h).padStart(2, '0')}:00{h === windowHours ? ' (start)' : h === 0 ? ' (T-0)' : ''}
+              <span key={f} className={h === 0 ? 'text-cyan-400 font-semibold' : ''} title={fmtUtc(hourToMs(t0, h))}>
+                {hourToLocal(t0, h)}{h === windowHours ? ' (start)' : h === 0 ? ' (end)' : ''}
               </span>
             );
           })}
@@ -251,7 +250,7 @@ export const TimeScrubber: React.FC<Props> = ({
           {/* Reset */}
           <button
             onClick={() => onChangeHour(windowHours)}
-            title={`Reset to start of window (T-${windowHours}h)`}
+            title={`Back to the start of the window (${hourToLocal(t0, windowHours, { withZone: true })})`}
             className="p-1.5 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded transition-colors"
           >
             <RotateCcw className="w-4 h-4" />

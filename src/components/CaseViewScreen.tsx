@@ -99,6 +99,7 @@ export const CaseViewScreen: React.FC<Props> = ({
 
                 <div className="flex items-center gap-3 text-xs font-mono text-slate-400">
                   <span>Analyst: {c.analyst}</span>
+                  {c.assignee && <><span>·</span><span data-testid="case-assignee">Assignee: <b className="text-slate-200">{c.assignee}</b></span></>}
                   <span>·</span>
                   <span>{new Date(c.createdAt).toLocaleString()}</span>
                 </div>
@@ -114,8 +115,9 @@ export const CaseViewScreen: React.FC<Props> = ({
                   <span className="text-red-400 font-semibold">{c.compromisedCount} high-risk / {c.nodeCount} nodes · {c.windowHours}h</span>
                 </div>
                 <div>
-                  <span className="text-slate-500 block">Verdict:</span>
-                  <span className="text-amber-400 font-semibold">{c.verdict || 'INVESTIGATING'}</span>
+                  <span className="text-slate-500 block">Verdict / disposition:</span>
+                  <span className={`font-semibold ${c.verdict === 'MALICIOUS' ? 'text-red-400' : c.verdict === 'BENIGN' ? 'text-emerald-400' : 'text-amber-400'}`}>{c.verdict || 'INVESTIGATING'}</span>
+                  {c.disposition && <span className="block text-slate-400">{c.disposition.replace(/_/g, ' ').toLowerCase()}</span>}
                 </div>
                 <div>
                   <span className="text-slate-500 block">Ticket handovers:</span>
@@ -150,6 +152,22 @@ export const CaseViewScreen: React.FC<Props> = ({
               </div>
 
               {c.notes && <p className="text-xs text-slate-400">{c.notes}</p>}
+
+              {c.status === 'CLOSED' && (
+                <div className="p-2.5 rounded-lg border border-emerald-500/30 bg-emerald-500/5 text-xs">
+                  <div className="font-semibold text-emerald-400">Closed {c.closedAt ? new Date(c.closedAt).toLocaleString() : ''}{c.closedBy ? ` by ${c.closedBy}` : ''}</div>
+                  {c.closureNotes && <div className="text-slate-300 whitespace-pre-wrap select-text mt-0.5">{c.closureNotes}</div>}
+                </div>
+              )}
+
+              {c.storyline && (
+                <div className="p-2.5 rounded-lg border border-purple-500/30 bg-purple-500/5 text-xs">
+                  <div className="font-semibold text-purple-300">Approved storyline · {c.storyline.engine}{c.storyline.approvedBy ? ` · approved by ${c.storyline.approvedBy}` : ''}</div>
+                  <div className="text-slate-200 mt-0.5">{c.storyline.headline}</div>
+                  <div className="text-slate-400">{c.storyline.phases.map(p => p.name).join(' → ')}</div>
+                  <div className="text-[10px] font-mono text-slate-500 mt-0.5">sha256 {c.storyline.sha256}</div>
+                </div>
+              )}
 
               {(c.evidence || []).length > 0 && (
                 <div className="pt-2 border-t border-slate-800/80 space-y-1 text-[11px] font-mono">

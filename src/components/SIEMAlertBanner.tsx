@@ -65,7 +65,7 @@ export const SIEMAlertBanner: React.FC<Props> = ({ userProfile, timeToContextMs,
           {notes.length > 0 && (
             <button onClick={() => setShowNotes(s => !s)} className="flex items-center gap-1 text-slate-400 hover:text-slate-200" title="Data notes and limitations">
               <Info className="w-3.5 h-3.5" />
-              <span>Notes ({notes.length})</span>
+              <span>Data notes ({notes.length})</span>
             </button>
           )}
 

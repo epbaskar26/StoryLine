@@ -70,9 +70,10 @@ interface Props {
   lastBuildMs: number | null;
   hosts: string[];
   ips: string[];
-  windowDays: number;
+  windowHours: number;
   t0: string;
   onGraphChanged: () => void;
+  onBuildGraph: (query: string) => void; // graph the query's results (live source or demo data)
 }
 
 export const SecurityToolsIntegrationHub: React.FC<Props> = ({
@@ -82,9 +83,10 @@ export const SecurityToolsIntegrationHub: React.FC<Props> = ({
   lastBuildMs,
   hosts,
   ips,
-  windowDays,
+  windowHours,
   t0,
-  onGraphChanged
+  onGraphChanged,
+  onBuildGraph
 }) => {
   const [activeSubTab, setActiveSubTab] = useState<'connectors' | 'query' | 'containment' | 'schema'>('connectors');
   const [connectors, setConnectors] = useState<Connector[]>([]);
@@ -187,7 +189,7 @@ export const SecurityToolsIntegrationHub: React.FC<Props> = ({
       const res = await fetch('/api/integrations/sync-entity', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ entityId: currentEntity, windowDays, t0 })
+        body: JSON.stringify({ entityId: currentEntity, windowHours, t0 })
       });
       const data = await res.json();
       if (data.success) {
@@ -274,7 +276,7 @@ export const SecurityToolsIntegrationHub: React.FC<Props> = ({
       const res = await fetch('/api/integrations/query', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tool: queryTool, query: queryText, entityId: currentEntity, windowDays, t0 })
+        body: JSON.stringify({ tool: queryTool, query: queryText, entityId: currentEntity, windowHours, t0 })
       });
       const data = await res.json();
       if (data.success) {
@@ -788,6 +790,16 @@ and security_result.action = "ALLOW"`);
                 >
                   <Search className={`w-3.5 h-3.5 ${isExecutingQuery ? 'animate-spin' : ''}`} />
                   <span>{isExecutingQuery ? 'Querying...' : 'Run Query'}</span>
+                </button>
+                <button
+                  data-testid="build-graph"
+                  onClick={() => queryText.trim() && onBuildGraph(queryText.trim())}
+                  disabled={!queryText.trim() || (!!status?.liveConfigured && queryTool !== status?.dataSource)}
+                  title={status?.liveConfigured && queryTool !== status?.dataSource ? `Graphs are built from the live source (${status?.liveLabel}); choose it as the engine` : 'Build an Attack Path and graph from the events this search returns'}
+                  className="flex items-center gap-1.5 px-4 py-2 bg-cyan-600 hover:bg-cyan-500 text-white rounded-lg text-xs font-bold transition-all disabled:opacity-40"
+                >
+                  <Network className="w-3.5 h-3.5" />
+                  <span>Build graph from results</span>
                 </button>
 
 

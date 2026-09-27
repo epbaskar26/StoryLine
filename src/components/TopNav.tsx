@@ -26,11 +26,6 @@ interface Props {
   onSelectUser: (userId: string) => void;
   onGenerateReplayClick: () => void;
   isRecording?: boolean;
-  activeWindowDays: number;
-  onChangeWindowDays: (days: number) => void;
-  t0: string;
-  showT0Picker: boolean;
-  onChangeT0: (t0: string) => void;
   isDarkMode: boolean;
   onToggleDarkMode: () => void;
   onOpenGlobalSearch?: () => void;
@@ -45,11 +40,6 @@ export const TopNav: React.FC<Props> = ({
   onSelectUser,
   onGenerateReplayClick,
   isRecording = false,
-  activeWindowDays,
-  onChangeWindowDays,
-  t0,
-  showT0Picker,
-  onChangeT0,
   isDarkMode,
   onToggleDarkMode,
   onOpenGlobalSearch
@@ -76,7 +66,7 @@ export const TopNav: React.FC<Props> = ({
           className="hidden md:flex items-center gap-2 px-3 py-1.5 bg-slate-100/80 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg text-xs text-slate-500 hover:border-slate-300 dark:hover:border-slate-700 cursor-pointer transition-colors"
         >
           <Search className="w-3.5 h-3.5 text-slate-400" />
-          <span className="font-sans whitespace-nowrap">Search entities...</span>
+          <span className="font-sans whitespace-nowrap">Search users or logs...</span>
           <kbd className="ml-3 px-1.5 py-0.5 text-[10px] font-mono bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-400">
             Ctrl+K
           </kbd>
@@ -161,39 +151,6 @@ export const TopNav: React.FC<Props> = ({
 
       {/* Zone 3: Window Selector, User Select, Light/Dark Toggle & Primary CTA */}
       <div className="flex items-center gap-3">
-        {/* 48h vs 7d Window */}
-        <div className="flex items-center bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-0.5 text-xs font-mono">
-          <button
-            onClick={() => onChangeWindowDays(2)}
-            className={`px-2 py-0.5 rounded transition-colors ${
-              activeWindowDays === 2 ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-cyan-300 font-bold shadow-sm' : 'text-slate-500'
-            }`}
-          >
-            48h
-          </button>
-          <button
-            onClick={() => onChangeWindowDays(7)}
-            className={`px-2 py-0.5 rounded transition-colors ${
-              activeWindowDays === 7 ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-cyan-300 font-bold shadow-sm' : 'text-slate-500'
-            }`}
-          >
-            7d
-          </button>
-        </div>
-
-        {/* T-0 picker (live data): historical datasets such as BOTS need an explicit end of window */}
-        {showT0Picker && (
-          <label className="flex items-center gap-1 text-[11px] font-mono text-slate-500" title="End of the investigation window (UTC). Leave empty for now.">
-            <span>T-0</span>
-            <input
-              type="datetime-local"
-              value={t0 ? t0.slice(0, 16) : ''}
-              onChange={(e) => onChangeT0(e.target.value ? `${e.target.value}:00Z` : '')}
-              className="bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700/80 rounded px-1.5 py-1 text-[11px] text-slate-800 dark:text-slate-200"
-            />
-          </label>
-        )}
-
         {/* User Identity Switcher */}
         <div className="relative">
           <select

@@ -1,3 +1,27 @@
+# Changes in 0.6.0
+
+## New
+
+- **AI Storyline** (new investigation tab): groups the Attack Path into attack phases (Initial Access, Execution, Persistence ...) with a plain-language explanation per step, laid out as a flow chart. The AI only interprets: it receives the evidence steps (names tokenized, command text quoted as untrusted data), must cite step ids, and anything citing a step that is not in the evidence is dropped and counted. Log text that looks like an instruction to the model is flagged as possible prompt injection. Without an AI provider a rule-based storyline is built from the indicators. **Approve & save to case** freezes the storyline (with its SHA-256) into the case.
+- **Ollama** as a local AI provider (`AI_PROVIDER=ollama`, `OLLAMA_URL`, `OLLAMA_MODEL`), for the storyline and the case summary. Gemini still works as before.
+- **Assign & Close**: assign an investigation, set status, and close it with a disposition (true positive malicious / authorized, false positive, inconclusive, duplicate) and closure notes. A case with the graph snapshot is created if needed. Reopen is supported.
+- **Notes** tab: every hypothesis, verdict, assignment, closure and approved storyline is recorded as an append-only note (and in the audit log). Manual notes can be added.
+- **Graphs from manual searches**: "Build graph from results" in the Integrations query console, "Graph log search" in Ctrl+K, and "Graph all activity on this host/IP/domain" in the entity panel. Search graphs show every matched identity; risk is scored per identity.
+- **Live mode**: the window ends at "now" and re-queries every 30 s; new entities are tagged NEW.
+- **Command insight**: process nodes keep every distinct command line (full text, up to 32 KB). Encoded PowerShell is decoded, and known techniques are flagged (download cradles, credential dumping, shadow-copy deletion, masquerading double extensions, rundll32 from user folders ...). The Attack Path shows a one-line command summary under each process step and a hover popover with the details.
+- PowerShell script block logging (event 4104) is read from Elastic and attached to the PowerShell process.
+
+## Fixed
+
+- Times are shown as real local times (with the zone, UTC on hover) everywhere instead of T-20 / T-40 offsets: scrubber, Attack Path cards, revisit notes, timeline, entity panel, replay overlay, case summary.
+- The window no longer slides: after the first load the end time is frozen, so nodes do not drop out as time passes. **Edit window** sets any start and end (up to 7 days) and re-queries; **Re-query** refreshes the same window.
+- Mark benign / Mark malicious now opens a reason box with **Save verdict**; verdicts are saved as notes, shown on the entity and on its Attack Path card.
+- Hypotheses (entity panel) are saved to the notes; the panel lists all notes about that entity.
+- Telemetry attributes show full values (no truncation), can be selected, and each value (or all of them) can be copied.
+- The graph continues past an executable: child processes (SPAWNED), files written (WROTE) and connections are attributed to the process that made them (Sysmon 1/3/11/22). The Marcus Ross demo now shows Outlook → dropper → rundll32 beacon → PowerShell → persistence → share discovery → shadow-copy deletion → ransomware canary.
+- Follow (Attack Path) now scrolls both ways to the newest step and pulses it, shows "Following" while active, and turns back on after panning.
+- Icons show what an entity is (mail client, browser, shell, server, archive, cloud storage ...) instead of generic emoji. Vendor logos are not used (trademarks; fetching favicons for investigated domains would also leak the investigation).
+
 # Changes in 0.5.0
 
 - New live data source: **Elasticsearch** (free Basic license). Set `DATA_SOURCE=elastic` and `ELASTIC_URL`. Reads Winlogbeat / ECS data: Windows Security logons, failures, process creation, group changes and file access; Sysmon process, network, file and DNS events; proxy-style web events. Falls back to raw `winlog.event_data.*` fields when Winlogbeat's ingest pipelines are not loaded.

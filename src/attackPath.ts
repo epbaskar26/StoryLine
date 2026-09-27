@@ -5,10 +5,17 @@ import type { SecurityEdge, SecurityNode, UserProfile } from './types';
 const HOUR_MS = 3_600_000;
 
 const TACTICS: Record<string, string> = {
-  T1566: 'Initial Access', T1078: 'Initial Access', T1110: 'Credential Access', T1003: 'Credential Access',
-  T1059: 'Execution', T1098: 'Persistence', T1087: 'Discovery', T1083: 'Discovery',
-  T1021: 'Lateral Movement', T1550: 'Lateral Movement', T1005: 'Collection', T1039: 'Collection', T1560: 'Collection',
-  T1071: 'Command & Control', T1567: 'Exfiltration', T1048: 'Exfiltration',
+  T1566: 'Initial Access', T1078: 'Initial Access', T1190: 'Initial Access', T1133: 'Initial Access',
+  T1110: 'Credential Access', T1003: 'Credential Access', T1555: 'Credential Access', T1558: 'Credential Access',
+  T1059: 'Execution', T1204: 'Execution', T1047: 'Execution',
+  T1098: 'Persistence', T1547: 'Persistence', T1053: 'Persistence', T1136: 'Persistence', T1543: 'Persistence',
+  T1027: 'Defense Evasion', T1140: 'Defense Evasion', T1218: 'Defense Evasion', T1562: 'Defense Evasion', T1564: 'Defense Evasion', T1055: 'Defense Evasion',
+  T1087: 'Discovery', T1083: 'Discovery', T1082: 'Discovery', T1018: 'Discovery', T1135: 'Discovery',
+  T1021: 'Lateral Movement', T1550: 'Lateral Movement', T1570: 'Lateral Movement',
+  T1005: 'Collection', T1039: 'Collection', T1560: 'Collection', T1114: 'Collection',
+  T1071: 'Command & Control', T1105: 'Command & Control', T1572: 'Command & Control', T1573: 'Command & Control',
+  T1567: 'Exfiltration', T1048: 'Exfiltration', T1041: 'Exfiltration',
+  T1486: 'Impact', T1490: 'Impact', T1489: 'Impact', T1485: 'Impact',
 };
 
 export function tacticFor(ttp?: string): string | undefined {
@@ -28,6 +35,7 @@ export interface PathStep {
   routine: boolean;
   visitNo: number; // 1 = first time this entity is reached; 2+ = revisit
   firstVisitHour?: number;
+  firstVisitMs?: number; // when this entity was first reached (for revisit notes)
   gapMs?: number; // time since the previous visit to this entity ended
   ttp?: string;
   tactic?: string;
@@ -44,8 +52,10 @@ export function buildAttackPath(profile: UserProfile): AttackPath {
   const windowHours = profile.windowHours ?? 48;
   const byId = new Map(profile.nodes.map(n => [n.id, n]));
   const root =
+    (profile.rootId && byId.get(profile.rootId)) ||
     profile.nodes.find(n => n.type === 'user' && n.name.toLowerCase() === profile.username.toLowerCase()) ||
     profile.nodes.find(n => n.type === 'user');
+  const searchGraph = profile.kind === 'search';
   const hourOf = (ms: number) => Math.max(0, Math.min(windowHours, Math.ceil((t0 - ms) / HOUR_MS)));
 
   const raw: Omit<PathStep, 'visitNo' | 'firstVisitHour' | 'gapMs' | 'isFirstLogin'>[] = [];
@@ -54,7 +64,7 @@ export function buildAttackPath(profile: UserProfile): AttackPath {
     const node = byId.get(edge.target);
     if (!src || !node) continue;
     // Keep the investigated user's own activity; drop other identities added by 1-hop expansion
-    if (src.type === 'user' && root && src.id !== root.id) continue;
+    if (!searchGraph && src.type === 'user' && root && src.id !== root.id) continue;
 
     const hasVisits = !!edge.visits?.length;
     const visits = hasVisits
@@ -68,7 +78,9 @@ export function buildAttackPath(profile: UserProfile): AttackPath {
         ? v.status || (edge.status === 'blocked' ? 'blocked' : edge.firstSeenInBaseline === false && i === 0 ? 'anomalous' : 'allowed')
         : edge.status;
       const ttp = perVisitRisk ? v.ttp?.[0] : edge.ttp?.[0];
-      const routine = !(status === 'critical' || status === 'anomalous' || status === 'blocked' || (edge.firstSeenInBaseline === false && i === 0) || edge.type === 'TRIGGERED');
+      // What a risky process does next (children, files, connections) is part of the story, not routine
+      const childOfRisky = ['SPAWNED', 'WROTE', 'CONNECTED_TO'].includes(edge.type) && src.type === 'process' && (src.compromised || src.riskScore >= 55);
+      const routine = !(childOfRisky || status === 'critical' || status === 'anomalous' || status === 'blocked' || (edge.firstSeenInBaseline === false && i === 0) || edge.type === 'TRIGGERED' || edge.type === 'MATCHED');
       raw.push({
         key: `${edge.id}#${i}`,
         edge,
@@ -86,7 +98,7 @@ export function buildAttackPath(profile: UserProfile): AttackPath {
   }
   raw.sort((a, b) => a.startMs - b.startMs || a.edge.id.localeCompare(b.edge.id, undefined, { numeric: true }));
 
-  const seen = new Map<string, { visits: number; lastEnd: number; firstHour: number }>();
+  const seen = new Map<string, { visits: number; lastEnd: number; firstHour: number; firstMs: number }>();
   let firstLoginMarked = false;
   const steps: PathStep[] = raw.map(r => {
     const prev = seen.get(r.node.id);
@@ -97,10 +109,11 @@ export function buildAttackPath(profile: UserProfile): AttackPath {
       ...r,
       visitNo: (prev?.visits || 0) + 1,
       firstVisitHour: prev?.firstHour,
+      firstVisitMs: prev?.firstMs,
       gapMs: prev ? Math.max(0, r.startMs - prev.lastEnd) : undefined,
       isFirstLogin,
     };
-    seen.set(r.node.id, { visits: step.visitNo, lastEnd: Math.max(prev?.lastEnd || 0, r.endMs), firstHour: prev?.firstHour ?? r.hour });
+    seen.set(r.node.id, { visits: step.visitNo, lastEnd: Math.max(prev?.lastEnd || 0, r.endMs), firstHour: prev?.firstHour ?? r.hour, firstMs: prev?.firstMs ?? r.startMs });
     return step;
   });
 

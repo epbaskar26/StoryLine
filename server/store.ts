@@ -1,6 +1,6 @@
 // Persistence: PostgreSQL when DATABASE_URL is set, otherwise an in-memory store (lost on restart).
 import pg from 'pg';
-import type { WatchlistItem, CaseRecord, AuditLogEntry, UserProfile, EvidenceRecord } from '../src/types';
+import type { WatchlistItem, CaseRecord, AuditLogEntry, UserProfile, EvidenceRecord, InvestigationNote } from '../src/types';
 import type { AdminConfig } from './demoData';
 import type { AlertRecord } from './graphBuilder';
 
@@ -31,6 +31,8 @@ export interface Store {
   upsertAnnotation(a: Annotation): Promise<void>;
   addAlert(alert: AlertRecord): Promise<void>;
   listAlerts(entityKey: string): Promise<AlertRecord[]>;
+  listNotes(filter: { entityKey?: string; caseId?: string }): Promise<InvestigationNote[]>;
+  addNote(note: InvestigationNote): Promise<void>;
 }
 
 const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v));
@@ -43,6 +45,7 @@ export class MemoryStore implements Store {
   private config!: AdminConfig;
   private annotations: Annotation[] = [];
   private alerts: AlertRecord[] = [];
+  private notes: InvestigationNote[] = [];
 
   async init(seed: { watchlist: WatchlistItem[]; cases: CaseRecord[]; audit: AuditLogEntry[]; config: AdminConfig }) {
     this.watchlist = clone(seed.watchlist);
@@ -82,6 +85,10 @@ export class MemoryStore implements Store {
   }
   async addAlert(alert: AlertRecord) { this.alerts.push(alert); }
   async listAlerts(entityKey: string) { return clone(this.alerts.filter(a => a.entityKey === entityKey)); }
+  async listNotes(f: { entityKey?: string; caseId?: string }) {
+    return clone(this.notes.filter(n => (!f.entityKey || n.entityKey === f.entityKey) && (!f.caseId || n.caseId === f.caseId)).sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
+  }
+  async addNote(note: InvestigationNote) { this.notes.push(clone(note)); }
 }
 
 const SCHEMA = `
@@ -132,6 +139,22 @@ CREATE TABLE IF NOT EXISTS alerts (
   received_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS alerts_entity_idx ON alerts (entity_key);
+-- Investigation notes (hypotheses, verdicts, assignment and closure) are append-only like the audit log
+CREATE TABLE IF NOT EXISTS notes (
+  id TEXT PRIMARY KEY,
+  entity_key TEXT NOT NULL,
+  case_id TEXT,
+  data JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS notes_entity_idx ON notes (entity_key);
+CREATE OR REPLACE FUNCTION notes_immutable() RETURNS trigger AS $$
+BEGIN
+  RAISE EXCEPTION 'notes are append-only';
+END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS notes_no_update ON notes;
+CREATE TRIGGER notes_no_update BEFORE UPDATE OR DELETE ON notes FOR EACH ROW EXECUTE FUNCTION notes_immutable();
 `;
 
 export class PgStore implements Store {
@@ -218,6 +241,17 @@ export class PgStore implements Store {
   async listAlerts(entityKey: string) {
     const r = await this.q(`SELECT data FROM alerts WHERE entity_key = $1 ORDER BY received_at`, [entityKey]);
     return r.rows.map(x => x.data as AlertRecord);
+  }
+  async listNotes(f: { entityKey?: string; caseId?: string }) {
+    const where: string[] = [];
+    const params: unknown[] = [];
+    if (f.entityKey) { params.push(f.entityKey); where.push(`entity_key = $${params.length}`); }
+    if (f.caseId) { params.push(f.caseId); where.push(`case_id = $${params.length}`); }
+    const r = await this.q(`SELECT data FROM notes ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY created_at DESC LIMIT 1000`, params);
+    return r.rows.map(x => x.data as InvestigationNote);
+  }
+  async addNote(n: InvestigationNote) {
+    await this.q(`INSERT INTO notes (id, entity_key, case_id, data, created_at) VALUES ($1,$2,$3,$4,$5)`, [n.id, n.entityKey, n.caseId || null, JSON.stringify(n), n.createdAt]);
   }
 }
 

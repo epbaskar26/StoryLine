@@ -2,7 +2,9 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ZoomIn, ZoomOut, RotateCcw, LocateFixed, Route, Info } from 'lucide-react';
 import type { SecurityEdge, SecurityNode, UserProfile } from '../types';
 import { buildAttackPath, displayedSteps, formatGap, type DisplayedStep } from '../attackPath';
-import { hourToUtc } from '../api';
+import { fmtLocal, hourToLocal, tzLabel } from '../timefmt';
+import { drawIconTile, iconFor } from '../nodeIcons';
+import { analyzeCommand, type CommandInsight } from '../commandInsight';
 
 interface Props {
   profile: UserProfile;
@@ -16,6 +18,7 @@ interface Props {
   recordingWatermarkText?: string;
   redactNames?: boolean;
   theme?: 'light' | 'dark';
+  verdicts?: Record<string, 'BENIGN' | 'MALICIOUS'>; // latest analyst verdict per node
 }
 
 const PALETTES = {
@@ -41,15 +44,32 @@ const PALETTES = {
 const STEP_LABEL: Record<string, string> = {
   AUTH_SUCCESS: 'login', AUTH_FAIL: 'failed login', FROM_IP: 'from IP', CONNECTED_TO: 'connected', ACCESSED: 'accessed',
   EXECUTED: 'ran', RAN_ON: 'on host', MEMBER_CHANGE: 'group change', UPLOADED: 'upload', TRIGGERED: 'alert',
+  SPAWNED: 'started', WROTE: 'wrote', MATCHED: 'matched',
 };
 
-const ICONS: Record<string, string> = { user: '👤', host: '💻', ip: '🌐', application: '🗄️', file: '📄', process: '⚡', domain: '☁️', alert: '🚨' };
+const SEV_COLORS = {
+  light: { high: '#D75054', medium: '#B06A00', low: '#5B6270', info: '#5B6270', bgHigh: '#FDECEC', bgMedium: '#FFF4E0', bgLow: '#F2F4F7' },
+  dark: { high: '#f87171', medium: '#fbbf24', low: '#94a3b8', info: '#94a3b8', bgHigh: '#3b1215', bgMedium: '#3a2a0a', bgLow: '#1e293b' },
+};
+
+// Most telling command for a process step: the riskiest execution, or the first one
+function commandInsightFor(node: SecurityNode): CommandInsight | null {
+  const ex = node.executions;
+  if (!ex?.length) return null;
+  const rank = { high: 3, medium: 2, low: 1, info: 0 } as const;
+  let best: CommandInsight | null = null;
+  for (const x of ex.slice(0, 20)) {
+    const ins = analyzeCommand(x.commandLine, { scriptBlock: x.source?.includes('4104') });
+    if (!best || rank[ins.severity] > rank[best.severity]) best = ins;
+  }
+  return best;
+}
 
 // Layout (world units, before zoom)
 const CARD_W = 196;
 const CARD_H = 70;
 const GAP_X = 72;
-const ROW_H = CARD_H + 78; // room for the tactic chip above and the note below
+const ROW_H = CARD_H + 100; // room for the tactic chip above, and the command callout and note below
 const PAD_X = 32;
 const PAD_TOP = 40;
 const FONT = 'Inter, -apple-system, "Segoe UI", sans-serif';
@@ -64,12 +84,6 @@ interface Placed {
 
 interface ChipHit { x: number; y: number; w: number; h: number }
 
-function fmtTime(ms: number): string {
-  const d = new Date(ms);
-  if (Number.isNaN(d.getTime())) return '';
-  const iso = d.toISOString();
-  return `${iso.slice(5, 10)} ${iso.slice(11, 16)} UTC`;
-}
 
 function truncate(ctx: CanvasRenderingContext2D, text: string, max: number): string {
   if (ctx.measureText(text).width <= max) return text;
@@ -109,6 +123,7 @@ export const AttackPathCanvas: React.FC<Props> = ({
   recordingWatermarkText,
   redactNames = false,
   theme = 'light',
+  verdicts = {},
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -119,6 +134,9 @@ export const AttackPathCanvas: React.FC<Props> = ({
   const dragRef = useRef<{ x: number; y: number; px: number; py: number; moved: boolean } | null>(null);
   const alphaRef = useRef(new Map<string, number>());
   const layoutRef = useRef<{ placed: Placed[]; chips: { hit: ChipHit }[] }>({ placed: [], chips: [] });
+  const pulseRef = useRef(0); // time the Follow button was pressed: the newest step pulses
+  const [hover, setHover] = useState<{ p: Placed; sx: number; sy: number } | null>(null);
+  const insights = useMemo(() => new Map(profile.nodes.filter(n => n.executions?.length).map(n => [n.id, commandInsightFor(n)])), [profile.nodes]);
   const sizeRef = useRef({ w: 800, h: 600, dpr: 1 });
 
   const path = useMemo(() => buildAttackPath(profile), [profile]);
@@ -137,8 +155,8 @@ export const AttackPathCanvas: React.FC<Props> = ({
   }, [profile.nodes]);
 
   // Everything the render loop reads, refreshed on every React render
-  const live = useRef({ shown, currentHour, windowHours, selectedNodeId, highlightedCitationId, isRecording, recordingWatermarkText, redactNames, theme, zoom, autoFollow, profile, redaction });
-  live.current = { shown, currentHour, windowHours, selectedNodeId, highlightedCitationId, isRecording, recordingWatermarkText, redactNames, theme, zoom, autoFollow, profile, redaction };
+  const live = useRef({ shown, currentHour, windowHours, selectedNodeId, highlightedCitationId, isRecording, recordingWatermarkText, redactNames, theme, zoom, autoFollow, profile, redaction, insights, verdicts });
+  live.current = { shown, currentHour, windowHours, selectedNodeId, highlightedCitationId, isRecording, recordingWatermarkText, redactNames, theme, zoom, autoFollow, profile, redaction, insights, verdicts };
 
   useEffect(() => {
     canvasRefCallback?.(canvasRef.current);
@@ -197,13 +215,15 @@ export const AttackPathCanvas: React.FC<Props> = ({
         alphaRef.current.set(key, a + (target - a) * 0.2);
       }
 
-      // Follow the newest visible step (during replay and by default)
-      if (L.autoFollow && !dragRef.current) {
-        const last = visible[visible.length - 1];
-        const needed = last ? (last.y + ROW_H) * z - h + 24 : 0;
-        const targetY = -Math.max(0, needed);
+      // Follow the newest visible step (during replay and by default): keep it inside the view on both axes
+      const newest = visible[visible.length - 1];
+      if (L.autoFollow && !dragRef.current && newest) {
+        const needY = (newest.y + CARD_H + 70) * z - h + 16;
+        const targetY = -Math.max(0, needY);
+        const needX = (newest.x + CARD_W + PAD_X) * z - w;
+        const targetX = -Math.max(0, needX);
         panRef.current.y += (targetY - panRef.current.y) * 0.15;
-        panRef.current.x += (0 - panRef.current.x) * 0.15;
+        panRef.current.x += (targetX - panRef.current.x) * 0.15;
       }
 
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -337,10 +357,9 @@ export const AttackPathCanvas: React.FC<Props> = ({
         ctx.fillRect(x, y, 4, CARD_H);
         ctx.restore();
 
-        // Text
+        // Icon tile (what the entity is: mail client, shell, server, archive...)
+        drawIconTile(ctx, node, x + 10, y + 8, 22, { tileAlpha: L.theme === 'light' ? 0.12 : 0.22 });
         ctx.textAlign = 'left';
-        ctx.font = `15px ${FONT}`;
-        ctx.fillText(ICONS[node.type] || '●', x + 12, y + 25);
         ctx.fillStyle = P.text;
         ctx.font = `600 12px ${FONT}`;
         const name = (node.isCrownJewel ? '👑 ' : '') + label(node);
@@ -348,14 +367,16 @@ export const AttackPathCanvas: React.FC<Props> = ({
 
         ctx.fillStyle = P.sub;
         ctx.font = `500 10.5px ${FONT}`;
-        const sub = p.kind === 'start' ? 'Investigated identity · start' : `${node.type} · ${st!.edge.type}${st!.count > 1 ? ` ×${st!.count}` : ''}`;
+        const sub = p.kind === 'start'
+          ? (node.type === 'query' ? 'Log search · start' : 'Investigated identity · start')
+          : `${iconFor(node).kind} · ${st!.edge.type}${st!.count > 1 ? ` ×${st!.count}` : ''}`;
         ctx.fillText(truncate(ctx, sub, CARD_W - 20), x + 12, y + 44);
 
         ctx.fillStyle = P.faint;
         ctx.font = `500 10px ${FONT}`;
         const when = p.kind === 'start'
-          ? `Window opens T-${String(L.windowHours).padStart(2, '0')}:00`
-          : `T-${String(st!.hour).padStart(2, '0')}:00 · ${fmtTime(st!.startMs)}`;
+          ? `Window opens ${hourToLocal(L.profile.t0, L.windowHours, { withZone: true })}`
+          : `${fmtLocal(st!.startMs, { withSeconds: true })} ${tzLabel()}`;
         ctx.fillText(truncate(ctx, when, CARD_W - 20), x + 12, y + 60);
 
         // Revisit tag and note
@@ -371,15 +392,76 @@ export const AttackPathCanvas: React.FC<Props> = ({
           ctx.fillStyle = P.revisitText;
           ctx.fillText(tag, tx + 6, ty + 11.5);
 
+        }
+
+        // Command callout under process steps: one-line summary of what the command does
+        const ins = st ? L.insights.get(node.id) : null;
+        let noteY = y + CARD_H + 15;
+        if (ins) {
+          const C = SEV_COLORS[L.theme];
+          const sevKey = ins.severity as 'high' | 'medium' | 'low' | 'info';
+          const fg = C[sevKey];
+          const bg = sevKey === 'high' ? C.bgHigh : sevKey === 'medium' ? C.bgMedium : C.bgLow;
+          ctx.font = `600 10px ${FONT}`;
+          const text = truncate(ctx, `›_ ${ins.summary}`, CARD_W + GAP_X - 24);
+          const tw = ctx.measureText(text).width + 14;
+          const cy = y + CARD_H + 9;
+          ctx.beginPath();
+          ctx.moveTo(x + 18, cy);
+          ctx.lineTo(x + 24, cy - 6);
+          ctx.lineTo(x + 30, cy);
+          ctx.closePath();
+          ctx.fillStyle = bg;
+          ctx.fill();
+          roundRect(ctx, x, cy, tw, 19, 6);
+          ctx.fill();
+          ctx.strokeStyle = fg;
+          ctx.lineWidth = 1;
+          ctx.stroke();
+          ctx.fillStyle = fg;
+          ctx.fillText(text, x + 7, cy + 13);
+          noteY = cy + 33;
+        }
+
+        if (st && st.visitNo > 1) {
           ctx.font = `500 10px ${FONT}`;
           ctx.fillStyle = P.note;
-          const first = st.firstVisitHour !== undefined ? ` · first seen T-${String(st.firstVisitHour).padStart(2, '0')}:00` : '';
+          const first = st.firstVisitMs !== undefined ? ` · first seen ${fmtLocal(st.firstVisitMs)}` : '';
           const note = `Back after ${formatGap(st.gapMs)}${first}`;
-          ctx.fillText(truncate(ctx, note, CARD_W), x + 2, y + CARD_H + 15);
+          ctx.fillText(truncate(ctx, note, CARD_W), x + 2, noteY);
         } else if (st?.isFirstLogin) {
           ctx.font = `500 10px ${FONT}`;
           ctx.fillStyle = P.loginNote;
-          ctx.fillText('First login in window', x + 2, y + CARD_H + 15);
+          ctx.fillText('First login in window', x + 2, noteY);
+        }
+
+        // Analyst verdict and "new in live mode" tags on the card's top-left edge
+        const verdict = L.verdicts[node.id];
+        let tagX = x + 8;
+        const tag = (label: string, color: string) => {
+          ctx.font = `700 8.5px ${FONT}`;
+          const tw = ctx.measureText(label).width + 10;
+          roundRect(ctx, tagX, y - 7, tw, 14, 7);
+          ctx.fillStyle = color;
+          ctx.fill();
+          ctx.fillStyle = '#FFFFFF';
+          ctx.fillText(label, tagX + 5, y + 3);
+          tagX += tw + 4;
+        };
+        if (verdict && !(st?.tactic || st?.ttp)) tag(verdict === 'MALICIOUS' ? '✕ MALICIOUS' : '✓ BENIGN', verdict === 'MALICIOUS' ? P.connectorCritical : '#018102');
+        if (node.isNew && p.kind === 'step') tag('NEW', '#2740CB');
+
+        // Follow: pulse ring on the newest step so the analyst sees where the replay is
+        const sincePulse = performance.now() - pulseRef.current;
+        if (p === newest && p.kind === 'step' && sincePulse < 1600) {
+          const k = sincePulse / 1600;
+          ctx.save();
+          ctx.globalAlpha = Math.max(0, 1 - k);
+          ctx.strokeStyle = P.ring;
+          ctx.lineWidth = 3;
+          roundRect(ctx, x - 4 - k * 10, y - 4 - k * 10, CARD_W + 8 + k * 20, CARD_H + 8 + k * 20, 14);
+          ctx.stroke();
+          ctx.restore();
         }
       }
       ctx.globalAlpha = 1;
@@ -404,8 +486,7 @@ export const AttackPathCanvas: React.FC<Props> = ({
         ctx.fillText((L.recordingWatermarkText || 'WatchMe replay').slice(0, 60), w - 424, 50);
         ctx.fillStyle = P.overlayClock;
         ctx.font = `500 10px ${FONT}`;
-        const abs = hourToUtc(L.profile.t0, L.currentHour);
-        ctx.fillText(`T-${String(L.currentHour).padStart(2, '0')}:00${abs ? ` · ${abs}` : ''} · window ${L.windowHours}h`, w - 424, 68);
+        ctx.fillText(`${hourToLocal(L.profile.t0, L.currentHour, { withZone: true })} · window ${L.windowHours}h`, w - 424, 68);
         if (L.redactNames) {
           ctx.fillStyle = P.overlayWarn;
           ctx.fillText('NAMES REDACTED', w - 424, 84);
@@ -427,9 +508,23 @@ export const AttackPathCanvas: React.FC<Props> = ({
   const handleMouseDown = (e: React.MouseEvent) => {
     dragRef.current = { x: e.clientX, y: e.clientY, px: panRef.current.x, py: panRef.current.y, moved: false };
   };
+  const hitTest = (e: React.MouseEvent): Placed | null => {
+    const p = toWorld(e);
+    for (const pl of layoutRef.current.placed) {
+      if (p.x >= pl.x && p.x <= pl.x + CARD_W && p.y >= pl.y && p.y <= pl.y + CARD_H) return pl;
+    }
+    return null;
+  };
   const handleMouseMove = (e: React.MouseEvent) => {
     const d = dragRef.current;
-    if (!d) return;
+    if (!d) {
+      const hit = hitTest(e);
+      if (hit?.kind === 'step') {
+        const rect = canvasRef.current!.getBoundingClientRect();
+        setHover(h => (h?.p.step?.key === hit.step?.key ? h : { p: hit, sx: e.clientX - rect.left, sy: e.clientY - rect.top }));
+      } else if (hover) setHover(null);
+      return;
+    }
     const dx = e.clientX - d.x;
     const dy = e.clientY - d.y;
     if (Math.abs(dx) + Math.abs(dy) > 4) {
@@ -498,11 +593,12 @@ export const AttackPathCanvas: React.FC<Props> = ({
           <button onClick={() => setZoom(z => Math.max(0.5, z - 0.1))} title="Zoom out" className={btn}><ZoomOut className="w-4 h-4" /></button>
           <button onClick={() => { setZoom(1); panRef.current = { x: 0, y: 0 }; }} title="Reset view" className={btn}><RotateCcw className="w-4 h-4" /></button>
           <button
-            onClick={() => setAutoFollow(true)}
-            title="Follow the latest step"
-            className={`flex items-center gap-1 px-2 py-1 rounded font-semibold ${autoFollow ? 'bg-cyan-600 text-white' : 'text-slate-400 hover:text-slate-100'}`}
+            data-testid="follow-button"
+            onClick={() => { setAutoFollow(true); pulseRef.current = performance.now(); }}
+            title={autoFollow ? 'Following the newest step (dragging or scrolling stops following). Click to jump to it.' : 'Jump to the newest step and keep it in view during replay'}
+            className={`flex items-center gap-1 px-2 py-1 rounded font-semibold ${autoFollow ? 'bg-cyan-600 text-white' : 'text-slate-400 hover:text-slate-100 border border-slate-700'}`}
           >
-            <LocateFixed className="w-3.5 h-3.5" /> Follow
+            <LocateFixed className="w-3.5 h-3.5" /> {autoFollow ? 'Following' : 'Follow'}
           </button>
         </span>
       </div>
@@ -513,10 +609,44 @@ export const AttackPathCanvas: React.FC<Props> = ({
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
-          onMouseLeave={() => { dragRef.current = null; }}
+          onMouseLeave={() => { dragRef.current = null; setHover(null); }}
           onWheel={handleWheel}
           className="block cursor-grab active:cursor-grabbing"
         />
+        {hover && hover.p.step && !isRecording && (() => {
+          const st = hover.p.step!;
+          const node = st.node;
+          const ex = node.executions || [];
+          const spec = iconFor(node);
+          const left = Math.min(hover.sx + 16, (containerRef.current?.clientWidth || 800) - 360);
+          const top = Math.min(hover.sy + 12, (containerRef.current?.clientHeight || 600) - 60);
+          return (
+            <div data-testid="path-popover" className="absolute z-20 w-[22rem] pointer-events-none bg-slate-900 border border-slate-700 rounded-xl shadow-2xl p-3 text-xs space-y-1.5" style={{ left, top }}>
+              <div className="flex items-center gap-2">
+                <spec.Icon className="w-4 h-4" style={{ color: spec.tint }} />
+                <span className="font-semibold text-slate-100 break-all">{node.name}</span>
+              </div>
+              <div className="text-slate-400">{spec.kind} · {STEP_LABEL[st.edge.type] || st.edge.type} · {fmtLocal(st.startMs, { withSeconds: true, withZone: true })}{st.count > 1 ? ` · ${st.count} events` : ''}</div>
+              {ex.length > 0 ? (
+                <div className="space-y-1">
+                  {ex.slice(0, 3).map((x, i) => {
+                    const ins = analyzeCommand(x.commandLine, { scriptBlock: x.source?.includes('4104') });
+                    return (
+                      <div key={i} className="p-1.5 rounded bg-slate-950 border border-slate-800">
+                        <div className={ins.severity === 'high' ? 'text-red-400 font-semibold' : ins.severity === 'medium' ? 'text-amber-400 font-semibold' : 'text-slate-200'}>{ins.summary}</div>
+                        <div className="font-mono text-[10px] text-slate-400 break-all line-clamp-2">{x.commandLine}</div>
+                      </div>
+                    );
+                  })}
+                  {ex.length > 3 && <div className="text-slate-500">+{ex.length - 3} more command line(s): click for all</div>}
+                </div>
+              ) : (
+                <div className="text-slate-300">{st.edge.details}</div>
+              )}
+              <div className="text-[10px] text-slate-500">Click the card for full details, notes and verdict</div>
+            </div>
+          );
+        })()}
       </div>
     </div>
   );

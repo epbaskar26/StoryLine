@@ -1,4 +1,4 @@
-export type NodeType = 'user' | 'host' | 'ip' | 'application' | 'file' | 'process' | 'domain' | 'alert';
+export type NodeType = 'user' | 'host' | 'ip' | 'application' | 'file' | 'process' | 'domain' | 'alert' | 'query';
 
 export type EdgeType =
   | 'AUTH_FAIL'
@@ -10,7 +10,10 @@ export type EdgeType =
   | 'RAN_ON'
   | 'MEMBER_CHANGE'
   | 'UPLOADED'
-  | 'TRIGGERED';
+  | 'TRIGGERED'
+  | 'SPAWNED' // parent process started a child process
+  | 'WROTE' // process created or modified a file
+  | 'MATCHED'; // log search matched this identity (search graphs)
 
 export type RiskBand = 'LOW' | 'MEDIUM' | 'HIGH';
 
@@ -51,6 +54,19 @@ export interface SecurityNode {
   vy?: number;
   pinned?: boolean;
   annotation?: string;
+  executions?: ProcessExecution[]; // process nodes: distinct command lines seen in the window
+  isNew?: boolean; // live mode: appeared since the previous refresh
+}
+
+export interface ProcessExecution {
+  ts: string; // first time this command line was seen
+  lastTs?: string;
+  commandLine: string;
+  parent?: string;
+  user?: string;
+  eventId?: string;
+  count: number;
+  source?: string; // e.g. "Sysmon 1", "Security 4688", "PowerShell 4104 (script block)"
 }
 
 export interface SecurityEdge {
@@ -116,6 +132,10 @@ export interface UserProfile {
   totalEdgeCount?: number;
   baselineAvailable?: boolean;
   notes?: string[]; // limitations / warnings to show the analyst
+  rootId?: string; // node the investigation starts from (the user, or the query node for search graphs)
+  kind?: 'entity' | 'search';
+  query?: string; // search graphs: the analyst's query
+  windowStart?: string; // ISO start of the window (t0 - windowHours)
 }
 
 export interface EntitySummary {
@@ -170,6 +190,65 @@ export interface CaseRecord {
   evidence?: EvidenceRecord[];
   dataSource?: DataSource;
   hasSnapshot?: boolean; // false for seeded demo cases
+  assignee?: string;
+  disposition?: Disposition;
+  closureNotes?: string;
+  closedAt?: string;
+  closedBy?: string;
+  storyline?: Storyline; // approved AI storyline, frozen with the case
+}
+
+export type Disposition = 'TRUE_POSITIVE_MALICIOUS' | 'TRUE_POSITIVE_BENIGN' | 'FALSE_POSITIVE' | 'INCONCLUSIVE' | 'DUPLICATE';
+
+export type NoteKind = 'NOTE' | 'HYPOTHESIS' | 'VERDICT' | 'ASSIGNMENT' | 'CLOSURE' | 'AI_STORYLINE';
+
+export interface InvestigationNote {
+  id: string;
+  entityKey: string;
+  caseId?: string;
+  nodeId?: string;
+  nodeName?: string;
+  kind: NoteKind;
+  verdict?: 'BENIGN' | 'MALICIOUS';
+  text: string;
+  analyst: string;
+  createdAt: string;
+}
+
+// AI Storyline: an interpretation layered on top of the evidence path. Every step cites a real edge.
+export interface StoryStep {
+  edgeId: string;
+  nodeId: string;
+  entity: string;
+  time: string; // ISO time of the cited visit
+  title: string;
+  explanation: string;
+  techniques: string[];
+}
+
+export interface StoryPhase {
+  name: string;
+  tactic: string;
+  summary: string;
+  confidence: 'high' | 'medium' | 'low';
+  steps: StoryStep[];
+}
+
+export interface Storyline {
+  verdict: 'attack' | 'suspicious' | 'no_pattern';
+  headline: string;
+  summary: string;
+  phases: StoryPhase[];
+  benignExplanations: string[];
+  gaps: string[];
+  engine: string;
+  aiGenerated: boolean;
+  generatedAt: string;
+  sha256: string;
+  droppedSteps: number; // steps the model returned with citations that do not exist
+  injectionWarnings: string[]; // log fields that looked like instructions to the model
+  approvedBy?: string;
+  approvedAt?: string;
 }
 
 export interface AuditLogEntry {
@@ -196,6 +275,8 @@ export interface SystemStatus {
   queryLanguage: string | null; // e.g. "SPL" or "Lucene"
   storage: 'postgres' | 'memory';
   aiConfigured: boolean;
+  aiProvider: 'gemini' | 'ollama' | 'none';
+  aiModel: string | null;
   analyst: string;
   lastGraphBuildMs: number | null;
 }

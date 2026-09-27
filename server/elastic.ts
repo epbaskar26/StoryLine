@@ -73,7 +73,7 @@ const range = (fromMs: number, toMs: number) => ({
 });
 
 // Fields that hold the account an event is about (Winlogbeat security + sysmon modules, plus ECS related.user)
-const USER_FIELDS = ['user.name', 'related.user', 'winlog.event_data.TargetUserName', 'winlog.event_data.SubjectUserName', 'user.target.name'];
+const USER_FIELDS = ['user.name', 'related.user', 'winlog.event_data.TargetUserName', 'winlog.event_data.SubjectUserName', 'user.target.name', 'winlog.user.name'];
 
 function userClause(username: string) {
   const bare = username.includes('\\') ? username.split('\\').pop()! : username;
@@ -150,6 +150,14 @@ export async function fetchBaseline(cfg: ElasticConfig, username: string, fromMs
   const out = new Set<string>();
   fields.forEach((_, i) => (res.aggregations?.[`f${i}`]?.buckets || []).forEach((b: any) => out.add(String(b.key).toLowerCase())));
   return out;
+}
+
+// Analyst search (Lucene) returning normalized events, used to build a graph from a manual search
+export async function searchEvents(cfg: ElasticConfig, q: string, fromMs: number, toMs: number, limit: number): Promise<NormalizedEvent[]> {
+  const query = q.trim()
+    ? { bool: { filter: [range(fromMs, toMs), { query_string: { query: q.trim(), default_operator: 'AND' } }] } }
+    : { bool: { filter: [range(fromMs, toMs)] } };
+  return normalizeEcsHits(await searchAll(cfg, query, limit));
 }
 
 const SYSTEM_ACCOUNTS = /^(system|local service|network service|anonymous logon|dwm-\d+|umfd-\d+|font driver host|window manager|-)$/i;

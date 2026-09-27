@@ -86,7 +86,7 @@ export const ReplayVideoStudio: React.FC<Props> = ({
           </div>
           <h2 className="text-xl font-bold text-slate-100">Timeline Replay Studio</h2>
           <p className="text-sm text-slate-400 mt-1 max-w-2xl">
-            Records the graph canvas while the timeline plays from T-{userProfile.windowHours ?? 48}h to T-0, with the timeline clock and case title burned in. The file's SHA-256 is computed in your browser and can be registered with the case.
+            Records the Attack Path (or graph) while the timeline plays from the start to the end of the {userProfile.windowHours ?? 48} h window, with the real time and case title burned in. The file's SHA-256 is computed in your browser and can be registered with the case.
           </p>
         </div>
 

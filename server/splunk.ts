@@ -219,6 +219,18 @@ export async function runAdhocQuery(cfg: SplunkConfig, spl: string, earliest: nu
   return exportSearch(cfg, `${trimmed} | head ${limit}`, earliest, latest);
 }
 
+// Analyst SPL returning raw events (for building a graph from a manual search). Transforming searches
+// (stats, table...) have no events to graph, so only plain searches are accepted.
+export async function searchEvents(cfg: SplunkConfig, spl: string, earliest: number, latest: number, limit: number): Promise<SplunkRow[]> {
+  let q = spl.trim().replace(/^search\s+/i, '');
+  if (!q) throw new Error('Empty query');
+  if (q.startsWith('|') || /\|\s*(stats|chart|timechart|table|top|rare|tstats|eventstats)\b/i.test(q)) {
+    throw new Error('Graphs need events: use a plain search (filters only), not a transforming command such as stats or table.');
+  }
+  if (!/\bindex\s*=/.test(q)) q = `${indexClause(cfg.index)} ${q}`;
+  return exportSearch(cfg, `search ${q} | fields ${EXPORT_FIELDS.join(', ')} | fields - _raw | head ${limit}`, earliest, latest);
+}
+
 // Connectivity check for the "Test Connection" button.
 export async function testConnection(cfg: SplunkConfig): Promise<{ ok: boolean; message: string; latencyMs: number }> {
   const started = Date.now();

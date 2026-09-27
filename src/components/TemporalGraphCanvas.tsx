@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState, useMemo } from 'react';
-import { hourToUtc } from '../api';
+import { hourToLocal } from '../timefmt';
+import { iconFor, iconImage } from '../nodeIcons';
 import { SecurityNode, SecurityEdge, NodeType, RiskBand } from '../types';
 import { 
   ZoomIn, 
@@ -602,24 +603,15 @@ export const TemporalGraphCanvas: React.FC<Props> = ({
         ctx.stroke();
         ctx.shadowBlur = 0;
 
-        // Inner Icon Representation
-        ctx.fillStyle = P.icon;
-        ctx.font = `${Math.max(10, Math.floor(n.radius * 0.65))}px sans-serif`;
+        // Inner icon: what the entity is (mail client, shell, server, archive...)
+        {
+          const img = iconImage(iconFor(n), P.icon);
+          const sz = Math.max(12, n.radius * 1.05);
+          if (img.complete && img.naturalWidth) ctx.drawImage(img, n.x - sz / 2, n.y - sz / 2, sz, sz);
+        }
+
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-
-        let symbol = '●';
-        if (n.type === 'user') symbol = '👤';
-        else if (n.type === 'host') symbol = '💻';
-        else if (n.type === 'ip') symbol = '🌐';
-        else if (n.type === 'application') symbol = '🗄️';
-        else if (n.type === 'file') symbol = '📄';
-        else if (n.type === 'process') symbol = '⚡';
-        else if (n.type === 'domain') symbol = '☁️';
-        else if (n.type === 'alert') symbol = '🚨';
-
-        ctx.fillText(symbol, n.x, n.y);
-
         // Crown Jewel Tag Badge
         if (n.isCrownJewel) {
           ctx.font = 'bold 9px Inter, sans-serif';
@@ -645,6 +637,11 @@ export const TemporalGraphCanvas: React.FC<Props> = ({
         if (n.pinned) {
           ctx.font = '10px sans-serif';
           ctx.fillText('📌', n.x + n.radius, n.y - n.radius);
+        }
+        if (n.isNew) {
+          ctx.font = 'bold 9px Inter, sans-serif';
+          ctx.fillStyle = P.ringSelected;
+          ctx.fillText('NEW', n.x - n.radius, n.y - n.radius);
         }
 
         // Compromised indicator badge
@@ -686,9 +683,7 @@ export const TemporalGraphCanvas: React.FC<Props> = ({
 
         ctx.fillStyle = P.overlayClock;
         ctx.font = '10px Inter, sans-serif';
-        const offset = `T-${currentHour.toString().padStart(2, '0')}:00`;
-        const abs = hourToUtc(t0, currentHour);
-        ctx.fillText(`${offset}${abs ? ` · ${abs}` : ''} · window ${windowHours}h`, 28, 72);
+        ctx.fillText(`${hourToLocal(t0, currentHour, { withZone: true })} · window ${windowHours}h`, 28, 72);
         if (redactNames) {
           ctx.fillStyle = P.overlayWarn;
           ctx.fillText('NAMES REDACTED', 28, 88);

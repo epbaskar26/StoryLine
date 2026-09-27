@@ -1,8 +1,9 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Sparkles, Search, Network, Settings, FolderArchive, Video, AlertTriangle, Table2, Share2, Route } from 'lucide-react';
-import { UserProfile, SecurityNode, ViewTab, WatchlistItem, CaseRecord, EntitySummary, SystemStatus } from './types';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { Sparkles, Search, Network, Settings, FolderArchive, Video, AlertTriangle, Table2, Share2, Route, NotebookPen, Wand2 } from 'lucide-react';
+import { UserProfile, SecurityNode, ViewTab, WatchlistItem, CaseRecord, EntitySummary, SystemStatus, InvestigationNote, Storyline } from './types';
 import { TopNav } from './components/TopNav';
 import { SIEMAlertBanner } from './components/SIEMAlertBanner';
+import { WindowBar } from './components/WindowBar';
 import { TemporalGraphCanvas } from './components/TemporalGraphCanvas';
 import { AttackPathCanvas } from './components/AttackPathCanvas';
 import { TimeScrubber } from './components/TimeScrubber';
@@ -14,11 +15,21 @@ import { WatchlistHome } from './components/WatchlistHome';
 import { CaseViewScreen } from './components/CaseViewScreen';
 import { AdminConfigScreen } from './components/AdminConfigScreen';
 import { SecurityToolsIntegrationHub } from './components/SecurityToolsIntegrationHub';
+import { NotesPanel } from './components/NotesPanel';
+import { StorylineView } from './components/StorylineView';
+import { AssignCloseDialog, type AssignClosePayload } from './components/AssignCloseDialog';
 import { api, sha256Hex } from './api';
 
+// What the investigation shows. t0 is the end of the window: '' means "now" (it is frozen after the first load
+// unless live mode is on, so nodes never drop out of the window as time passes).
 type GraphSource =
-  | { kind: 'live'; key: string; windowDays: number; t0: string; nonce: number }
+  | { kind: 'live'; key: string; windowHours: number; t0: string; live: boolean; nonce: number }
+  | { kind: 'search'; query: string; windowHours: number; t0: string; live: boolean; nonce: number }
   | { kind: 'case'; caseId: string };
+
+type InvestigationView = 'path' | 'story' | 'graph' | 'timeline' | 'notes';
+
+const LIVE_REFRESH_MS = 30_000;
 
 // Recording formats in order of preference. Chrome and Edge support MP4 in MediaRecorder; Firefox records WebM.
 const RECORDING_MIME_TYPES = ['video/mp4;codecs=avc1.42E01E', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm'];
@@ -28,25 +39,29 @@ function pickRecordingMime(): string {
   return RECORDING_MIME_TYPES.find(t => MediaRecorder.isTypeSupported(t)) || '';
 }
 
+const sourceKey = (g: GraphSource) => (g.kind === 'live' ? `e:${g.key}` : g.kind === 'search' ? `s:${g.query}` : `c:${g.caseId}`);
+
 export default function App() {
   const params = new URLSearchParams(window.location.search);
   const initialEntity = params.get('entity') || 'jsmith';
+  const initialQuery = params.get('q');
   const initialAlertHour = params.get('alert_time');
+  const initialHours = Math.min(168, Math.max(1, (parseInt(params.get('window') || '2', 10) || 2) * 24));
 
   const [activeTab, setActiveTab] = useState<ViewTab>('investigation');
   const [status, setStatus] = useState<SystemStatus | null>(null);
-  const [graphSource, setGraphSource] = useState<GraphSource>({
-    kind: 'live',
-    key: initialEntity,
-    windowDays: Math.min(7, Math.max(1, parseInt(params.get('window') || '2', 10) || 2)),
-    t0: params.get('t0') || '',
-    nonce: 0,
-  });
+  const [graphSource, setGraphSource] = useState<GraphSource>(
+    initialQuery
+      ? { kind: 'search', query: initialQuery, windowHours: initialHours, t0: params.get('t0') || '', live: false, nonce: 0 }
+      : { kind: 'live', key: initialEntity, windowHours: initialHours, t0: params.get('t0') || '', live: params.get('live') === '1', nonce: 0 },
+  );
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+  const [investigationKey, setInvestigationKey] = useState<string>('');
   const [availableUsers, setAvailableUsers] = useState<EntitySummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [timeToContextMs, setTimeToContextMs] = useState<number | null>(null);
+  const [lastRefreshMs, setLastRefreshMs] = useState<number | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
   const [isDarkMode, setIsDarkMode] = useState<boolean>(() => {
@@ -55,20 +70,27 @@ export default function App() {
   const [globalSearchOpen, setGlobalSearchOpen] = useState<boolean>(false);
   const [globalSearchTerm, setGlobalSearchTerm] = useState<string>('');
   const [dossierOpen, setDossierOpen] = useState(false);
+  const [assignOpen, setAssignOpen] = useState(false);
 
   const [watchlist, setWatchlist] = useState<WatchlistItem[]>([]);
   const [cases, setCases] = useState<CaseRecord[]>([]);
   const [activeCaseId, setActiveCaseId] = useState<string | null>(null);
+  const [notes, setNotes] = useState<InvestigationNote[]>([]);
 
-  // Investigation view: graph canvas or event table
-  type InvestigationView = 'path' | 'graph' | 'timeline';
+  const [storyline, setStoryline] = useState<Storyline | null>(null);
+  const [storyLoading, setStoryLoading] = useState(false);
+  const [storyError, setStoryError] = useState<string | null>(null);
+
   const [investigationView, setInvestigationView] = useState<InvestigationView>(() => {
-    try { const v = localStorage.getItem('watchme-view'); return v === 'graph' || v === 'timeline' ? v : 'path'; } catch { return 'path'; }
+    try {
+      const v = localStorage.getItem('watchme-view');
+      return v === 'graph' || v === 'timeline' || v === 'story' || v === 'notes' ? v : 'path';
+    } catch { return 'path'; }
   });
   useEffect(() => {
     try { localStorage.setItem('watchme-view', investigationView); } catch { /* storage unavailable */ }
   }, [investigationView]);
-  // The timeline is a table; replays and citation jumps use the last picture view (path by default)
+  // Replays and citation jumps use the last picture view (path by default)
   const pictureView: 'path' | 'graph' = investigationView === 'graph' ? 'graph' : 'path';
   const [timelineNodeFilter, setTimelineNodeFilter] = useState<string | null>(null);
 
@@ -90,10 +112,17 @@ export default function App() {
   const [recordedVideo, setRecordedVideo] = useState<RecordedVideo | null>(null);
   const [replaySettings, setReplaySettings] = useState<ReplaySettings>({ durationSecs: 30, redact: false, titleText: '' });
 
+  const profileRef = useRef<UserProfile | null>(null);
+  profileRef.current = userProfile;
+  const loadedSourceKeyRef = useRef<string>('');
+  const skipLoadRef = useRef<string | null>(null); // freezing t0 after a load must not trigger another load
+
   const entityKey = graphSource.kind === 'live' ? graphSource.key : userProfile?.username || '';
-  const windowHours = userProfile?.windowHours ?? 48;
-  const windowDays = graphSource.kind === 'live' ? graphSource.windowDays : Math.round(windowHours / 24);
-  const t0Param = graphSource.kind === 'live' ? graphSource.t0 : userProfile?.t0 || '';
+  const windowHours = userProfile?.windowHours ?? (graphSource.kind !== 'case' ? graphSource.windowHours : 48);
+  const t0Param = graphSource.kind !== 'case' ? graphSource.t0 : userProfile?.t0 || '';
+  const isLive = graphSource.kind !== 'case' && graphSource.live;
+  const searchQuery = graphSource.kind === 'search' ? graphSource.query : userProfile?.kind === 'search' ? userProfile.query : undefined;
+  const activeCase = cases.find(c => c.id === activeCaseId) || null;
 
   // `dark` stays on so the components' dark: variants apply; `theme-dark` picks the palette (see index.css)
   useEffect(() => {
@@ -127,41 +156,73 @@ export default function App() {
     refreshLists();
   }, [refreshLists]);
 
-  // Load the graph (live query or saved case snapshot)
+  // Load the graph (entity, log search, or saved case snapshot)
   useEffect(() => {
+    const key = sourceKey(graphSource);
+    const stateKey = JSON.stringify(graphSource);
+    if (skipLoadRef.current === stateKey) { skipLoadRef.current = null; return; }
     let cancelled = false;
     const started = performance.now();
+    const refreshOfSame = loadedSourceKeyRef.current === key && !!profileRef.current;
     setLoading(true);
     setLoadError(null);
 
-    const load = async () => {
+    const load = async (): Promise<{ profile: UserProfile; invKey: string }> => {
       if (graphSource.kind === 'case') {
         const d = await api<{ case: CaseRecord; snapshot: UserProfile | null }>(`/api/cases/${graphSource.caseId}`);
         if (!d.snapshot) throw new Error(`Case ${d.case.caseRef} has no saved graph snapshot (demo seed case). Open the entity live instead.`);
-        return { ...d.snapshot, dataSource: 'snapshot' as const, notes: [...(d.snapshot.notes || []), `Snapshot from case ${d.case.caseRef}, saved ${new Date(d.case.createdAt).toLocaleString()}.`] };
+        return {
+          profile: { ...d.snapshot, dataSource: 'snapshot' as const, notes: [...(d.snapshot.notes || []), `Snapshot from case ${d.case.caseRef}, saved ${new Date(d.case.createdAt).toLocaleString()}.`] },
+          invKey: d.case.entityKey || d.snapshot.username,
+        };
       }
-      const q = new URLSearchParams({ windowDays: String(graphSource.windowDays) });
-      if (graphSource.t0) q.set('t0', graphSource.t0);
-      if (graphSource.nonce > 0) q.set('refresh', '1');
+      const q = new URLSearchParams({ windowHours: String(graphSource.windowHours) });
+      if (graphSource.t0 && !graphSource.live) q.set('t0', graphSource.t0);
+      if (graphSource.nonce > 0 || graphSource.live) q.set('refresh', '1');
+      if (graphSource.kind === 'search') {
+        q.set('q', graphSource.query);
+        const d = await api<{ profile: UserProfile; investigationKey: string }>(`/api/graph/search?${q}`);
+        return { profile: d.profile, invKey: d.investigationKey };
+      }
       const d = await api<{ profile: UserProfile }>(`/api/graph/${encodeURIComponent(graphSource.key)}?${q}`);
-      return d.profile;
+      return { profile: d.profile, invKey: graphSource.key.toLowerCase() };
     };
 
     load()
-      .then(profile => {
+      .then(({ profile, invKey }) => {
         if (cancelled) return;
-        setUserProfile(profile);
+        const prev = profileRef.current;
+        if (refreshOfSame && prev && graphSource.kind !== 'case' && graphSource.live) {
+          // Live refresh: keep the analyst's place, mark what is new since the last refresh
+          const before = new Set(prev.nodes.map(n => n.id));
+          profile = { ...profile, nodes: profile.nodes.map(n => ({ ...n, isNew: !before.has(n.id) })) };
+          const added = profile.nodes.filter(n => n.isNew).length;
+          if (added) setNotice(`Live: ${added} new entit${added === 1 ? 'y' : 'ies'} since the last refresh.`);
+          setUserProfile(profile);
+          setCurrentHour(0);
+        } else {
+          setUserProfile(profile);
+          const alertHour = initialAlertHour ? parseInt(initialAlertHour, 10) : NaN;
+          if (!refreshOfSame) {
+            setCurrentHour(Number.isFinite(alertHour) ? Math.min(profile.windowHours ?? 48, Math.max(0, alertHour)) : 0);
+            setSelectedNode(null);
+            setHighlightedCitationId(null);
+            setTimelineNodeFilter(null);
+            setRecordedVideo(null);
+            setStoryline(null);
+            setStoryError(null);
+          }
+          setReplaySettings(s => ({ ...s, titleText: `INCIDENT EVIDENCE // ${profile.kind === 'search' ? 'log search' : profile.username}` }));
+        }
+        loadedSourceKeyRef.current = key;
+        setInvestigationKey(invKey);
         setTimeToContextMs(Math.round(performance.now() - started));
-        const alertHour = initialAlertHour ? parseInt(initialAlertHour, 10) : NaN;
-        setCurrentHour(Number.isFinite(alertHour) ? Math.min(profile.windowHours ?? 48, Math.max(0, alertHour)) : 0);
-        setSelectedNode(null);
-        setHighlightedCitationId(null);
-        setTimelineNodeFilter(null);
-        setRecordedVideo(null);
-        setReplaySettings(s => ({ ...s, titleText: `INCIDENT EVIDENCE // ${profile.username}` }));
-        if (graphSource.kind === 'live') {
-          const existing = cases.find(c => c.entityKey === graphSource.key && c.hasSnapshot);
-          setActiveCaseId(existing?.id || null);
+        setLastRefreshMs(Date.now());
+        // Freeze the window: "now" becomes a fixed end time, so re-queries and expansions use the same window
+        if (graphSource.kind !== 'case' && !graphSource.live && !graphSource.t0 && profile.t0) {
+          const frozen = { ...graphSource, t0: profile.t0 };
+          skipLoadRef.current = JSON.stringify(frozen);
+          setGraphSource(frozen);
         }
       })
       .catch(err => {
@@ -174,13 +235,61 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [graphSource]);
 
+  // Live mode: re-query every 30 s with the window ending "now"
+  useEffect(() => {
+    if (!isLive) return;
+    const t = window.setInterval(() => {
+      setGraphSource(prev => (prev.kind !== 'case' && prev.live ? { ...prev, nonce: prev.nonce + 1 } : prev));
+    }, LIVE_REFRESH_MS);
+    return () => window.clearInterval(t);
+  }, [isLive]);
+
+  // Notes and the case for the current investigation
+  const reloadNotes = useCallback((key: string) => {
+    if (!key) return;
+    api<{ notes: InvestigationNote[] }>(`/api/notes?entityKey=${encodeURIComponent(key)}`).then(d => setNotes(d.notes)).catch(err => setNotice(err.message));
+  }, []);
+  useEffect(() => { reloadNotes(investigationKey); }, [investigationKey, reloadNotes]);
+  useEffect(() => {
+    if (!investigationKey) return;
+    if (graphSource.kind === 'case') { setActiveCaseId(graphSource.caseId); return; }
+    const existing = cases.find(c => c.entityKey === investigationKey && c.hasSnapshot);
+    setActiveCaseId(existing?.id || null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [investigationKey]);
+
+  // Latest verdict per node (notes are newest first)
+  const verdicts = useMemo(() => {
+    const out: Record<string, 'BENIGN' | 'MALICIOUS'> = {};
+    for (const n of notes) if (n.kind === 'VERDICT' && n.nodeId && n.verdict && !out[n.nodeId]) out[n.nodeId] = n.verdict;
+    return out;
+  }, [notes]);
+
   const openEntity = (key: string) => {
-    setGraphSource(prev => ({ kind: 'live', key, windowDays: prev.kind === 'live' ? prev.windowDays : 2, t0: prev.kind === 'live' ? prev.t0 : '', nonce: 0 }));
+    setGraphSource(prev => ({ kind: 'live', key, windowHours: prev.kind !== 'case' ? prev.windowHours : 48, t0: prev.kind !== 'case' ? prev.t0 : '', live: prev.kind !== 'case' ? prev.live : false, nonce: 0 }));
     setActiveTab('investigation');
   };
 
+  const openSearch = (query: string) => {
+    setGraphSource(prev => ({ kind: 'search', query, windowHours: prev.kind !== 'case' ? prev.windowHours : 48, t0: prev.kind !== 'case' ? prev.t0 : '', live: false, nonce: 0 }));
+    setActiveTab('investigation');
+    setInvestigationView('path');
+  };
+
   const reloadGraph = () => {
-    setGraphSource(prev => (prev.kind === 'live' ? { ...prev, nonce: prev.nonce + 1 } : prev));
+    setGraphSource(prev => (prev.kind !== 'case' ? { ...prev, nonce: prev.nonce + 1 } : prev));
+  };
+
+  const applyWindow = (w: { t0: string; windowHours: number }) => {
+    setGraphSource(prev => (prev.kind !== 'case' ? { ...prev, t0: w.t0, windowHours: w.windowHours, live: false, nonce: prev.nonce + 1 } : prev));
+  };
+
+  const toggleLive = () => {
+    setGraphSource(prev => {
+      if (prev.kind === 'case') return prev;
+      if (prev.live) return { ...prev, live: false, t0: profileRef.current?.t0 || new Date().toISOString() };
+      return { ...prev, live: true, t0: '', nonce: prev.nonce + 1 };
+    });
   };
 
   const handleCanvasRef = useCallback((canvas: HTMLCanvasElement | null) => {
@@ -193,7 +302,7 @@ export default function App() {
     try {
       const data = await api<{ nodes: SecurityNode[]; edges: UserProfile['edges']; message?: string }>('/api/graph/expand', {
         method: 'POST',
-        body: { nodeId, userKey: entityKey, windowDays, t0: t0Param },
+        body: { nodeId, userKey: entityKey, searchQuery: userProfile.kind === 'search' ? userProfile.query : undefined, windowHours, t0: userProfile.t0 || t0Param },
       });
       if (data.message) setNotice(data.message);
       if (data.nodes.length || data.edges.length) {
@@ -212,21 +321,36 @@ export default function App() {
     setSelectedNode(n => (n && n.id === nodeId ? { ...n, pinned: !n.pinned } : n));
   };
 
-  const handleTagVerdict = (targetId: string, verdict: 'BENIGN' | 'MALICIOUS') => {
-    api('/api/feedback', { method: 'POST', body: { targetId, verdict, note: 'Tagged from entity detail drawer' } }).catch(err => setNotice(err.message));
+  const handleSaveVerdict = async (node: SecurityNode, verdict: 'BENIGN' | 'MALICIOUS', reason: string) => {
+    const d = await api<{ note: InvestigationNote }>('/api/feedback', {
+      method: 'POST',
+      body: { targetId: node.id, nodeName: node.name, entityKey: investigationKey, caseId: activeCaseId || undefined, verdict, note: reason },
+    });
+    setNotes(prev => [d.note, ...prev]);
+    setNotice(`Verdict saved: ${node.name} marked ${verdict}. Recorded in the notes and the audit log.`);
   };
 
-  const handleSaveAnnotation = async (nodeId: string, text: string) => {
-    await api('/api/annotations', { method: 'POST', body: { entityKey, nodeId, text } });
-    setUserProfile(p => (p ? { ...p, nodes: p.nodes.map(n => (n.id === nodeId ? { ...n, annotation: text } : n)) } : p));
+  const handleSaveHypothesis = async (node: SecurityNode, text: string) => {
+    const d = await api<{ note: InvestigationNote | null }>('/api/annotations', {
+      method: 'POST',
+      body: { entityKey: investigationKey, nodeId: node.id, nodeName: node.name, caseId: activeCaseId || undefined, text },
+    });
+    if (d.note) setNotes(prev => [d.note!, ...prev]);
+    setUserProfile(p => (p ? { ...p, nodes: p.nodes.map(n => (n.id === node.id ? { ...n, annotation: text } : n)) } : p));
+  };
+
+  const handleAddNote = async (kind: 'NOTE' | 'HYPOTHESIS', text: string) => {
+    const d = await api<{ note: InvestigationNote }>('/api/notes', { method: 'POST', body: { entityKey: investigationKey, caseId: activeCaseId || undefined, kind, text } });
+    setNotes(prev => [d.note, ...prev]);
   };
 
   // FR-19: save the current graph (including expansions and annotations) as a case
   const createCase = async (): Promise<CaseRecord | null> => {
     if (!userProfile) return null;
+    const title = userProfile.kind === 'search' ? `Log search: ${userProfile.query}` : `${userProfile.triggerEvent} - ${userProfile.username}`;
     const data = await api<{ case: CaseRecord }>('/api/cases', {
       method: 'POST',
-      body: { entityKey, title: `${userProfile.triggerEvent} - ${userProfile.username}`, profile: userProfile },
+      body: { entityKey: investigationKey || entityKey, title, profile: userProfile },
     });
     setCases(prev => [data.case, ...prev]);
     setActiveCaseId(data.case.id);
@@ -249,6 +373,46 @@ export default function App() {
   const ensureCase = async (): Promise<CaseRecord | null> => {
     const existing = cases.find(c => c.id === activeCaseId);
     return existing || createCase();
+  };
+
+  // Assign & close: creates the case (with graph snapshot) if needed, then records assignment and closure
+  const handleAssignClose = async (p: AssignClosePayload) => {
+    const c = await ensureCase();
+    if (!c) throw new Error('No graph loaded');
+    const d = await api<{ case: CaseRecord; notes: InvestigationNote[] }>(`/api/cases/${c.id}`, { method: 'PATCH', body: p });
+    setCases(prev => prev.map(x => (x.id === c.id ? d.case : x)));
+    setNotes(prev => [...d.notes, ...prev]);
+    setAssignOpen(false);
+    setNotice(p.status === 'CLOSED' ? `${d.case.caseRef} closed (${d.case.disposition?.replace(/_/g, ' ').toLowerCase()}), assigned to ${d.case.assignee}.` : `${d.case.caseRef} assigned to ${d.case.assignee} (${d.case.status}).`);
+  };
+
+  // AI Storyline
+  const generateStoryline = async () => {
+    if (!userProfile) return;
+    setStoryLoading(true);
+    setStoryError(null);
+    try {
+      const d = await api<{ storyline: Storyline }>('/api/ai/storyline', { method: 'POST', body: { profile: userProfile, privacyModeEnabled: true } });
+      setStoryline(d.storyline);
+    } catch (err: any) {
+      setStoryError(err.message);
+    } finally {
+      setStoryLoading(false);
+    }
+  };
+
+  const approveStoryline = async () => {
+    if (!storyline) return;
+    try {
+      const c = await ensureCase();
+      if (!c) return;
+      const d = await api<{ case: CaseRecord; note: InvestigationNote }>(`/api/cases/${c.id}/storyline`, { method: 'POST', body: { storyline } });
+      setCases(prev => prev.map(x => (x.id === c.id ? d.case : x)));
+      setNotes(prev => [d.note, ...prev]);
+      setNotice(`Storyline approved and saved to ${c.caseRef} (hash in the audit log).`);
+    } catch (err: any) {
+      setNotice(`Could not save the storyline: ${err.message}`);
+    }
   };
 
   // FR-20: push to ticketing for the case that belongs to the current investigation
@@ -278,6 +442,19 @@ export default function App() {
     } catch (err: any) {
       setNotice(`Could not register evidence: ${err.message}`);
     }
+  };
+
+  // Search graph around a host / IP / domain, in the live source's query language
+  const handleSearchEntity = (node: SecurityNode) => {
+    const v = node.name.replace(/"/g, '');
+    const ds = status?.dataSource;
+    let q = v;
+    if (ds === 'elastic') {
+      q = node.type === 'host' ? `host.name:"${v}" OR winlog.computer_name:"${v}"` : node.type === 'ip' ? `source.ip:"${v}" OR destination.ip:"${v}"` : `destination.domain:"${v}" OR dns.question.name:"${v}" OR url.domain:"${v}"`;
+    } else if (ds === 'splunk') {
+      q = node.type === 'host' ? `(host="${v}" OR ComputerName="${v}")` : node.type === 'ip' ? `(src_ip="${v}" OR dest_ip="${v}" OR DestinationIp="${v}")` : `(QueryName="${v}" OR url="*${v}*" OR DestinationHostname="${v}")`;
+    }
+    openSearch(q);
   };
 
   const stopReplayTimer = () => {
@@ -401,9 +578,9 @@ export default function App() {
     if (!userProfile) return;
     const nameOf = (id: string) => userProfile.nodes.find(n => n.id === id)?.name || id;
     const q = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-    const headers = 'ID,First_Seen_UTC,Last_Seen_UTC,Hour_Offset,Type,Protocol,Source,Target,Event_Count,Status,MITRE_TTP,Details\n';
+    const headers = 'ID,First_Seen_UTC,Last_Seen_UTC,Type,Protocol,Source,Target,Event_Count,Status,MITRE_TTP,Details\n';
     const rows = userProfile.edges
-      .map(e => [e.id, e.firstSeen, e.lastSeen, `T-${e.hour}h`, e.type, e.protocol, nameOf(e.source), nameOf(e.target), e.eventCount, e.status, (e.ttp || []).join(';'), e.details].map(q).join(','))
+      .map(e => [e.id, e.firstSeen, e.lastSeen, e.type, e.protocol, nameOf(e.source), nameOf(e.target), e.eventCount, e.status, (e.ttp || []).join(';'), e.details].map(q).join(','))
       .join('\n');
     download(new Blob([headers + rows], { type: 'text/csv' }), `watchme_timeline_${userProfile.username}_${windowHours}h.csv`);
   };
@@ -419,12 +596,22 @@ export default function App() {
     }
   };
 
+  const jumpToCitation = (edgeId: string, nodeId?: string) => {
+    if (!userProfile) return;
+    setHighlightedCitationId(edgeId);
+    setInvestigationView('path');
+    const edge = userProfile.edges.find(e => e.id === edgeId);
+    if (edge) setCurrentHour(Math.max(0, edge.hour - 0));
+    const node = userProfile.nodes.find(n => n.id === (nodeId || edgeId));
+    if (node) setSelectedNode(node);
+  };
+
   // --------- Render ---------
   if (loading && !userProfile) {
     return (
       <div className="w-screen h-screen bg-slate-950 flex flex-col items-center justify-center text-slate-400 font-mono text-sm space-y-3">
         <div className="w-8 h-8 rounded-full border-2 border-cyan-400 border-t-transparent animate-spin" />
-        <span>Building {windowDays * 24}h graph for {entityKey}...</span>
+        <span>Building {windowHours}h graph for {graphSource.kind === 'search' ? `search "${graphSource.query}"` : entityKey}...</span>
       </div>
     );
   }
@@ -452,9 +639,12 @@ export default function App() {
     const tgt = nodeById.get(e.target);
     return src && tgt && src.firstSeenHour >= currentHour && tgt.firstSeenHour >= currentHour && e.hour >= currentHour;
   });
+  const storyApprovedRef = storyline && activeCase?.storyline?.sha256 === storyline.sha256 ? activeCase.caseRef : null;
+  const windowDaysApprox = Math.max(1, Math.round(windowHours / 24));
 
   const tabButton = (view: InvestigationView, label: string, Icon: typeof Network) => (
     <button
+      data-testid={`view-${view}`}
       onClick={() => setInvestigationView(view)}
       className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-mono transition-colors ${
         investigationView === view ? 'bg-cyan-500 text-slate-950 font-bold' : 'text-slate-400 hover:text-slate-100'
@@ -464,6 +654,8 @@ export default function App() {
       {label}
     </button>
   );
+
+  const selected = selectedNode ? userProfile.nodes.find(n => n.id === selectedNode.id) || selectedNode : null;
 
   return (
     <div className="flex flex-col w-screen h-screen overflow-hidden bg-slate-100 dark:bg-slate-950 text-slate-900 dark:text-slate-100 font-sans transition-colors duration-200">
@@ -476,11 +668,6 @@ export default function App() {
         onSelectUser={openEntity}
         onGenerateReplayClick={startAutomatedRecording}
         isRecording={isRecording}
-        activeWindowDays={windowDays}
-        onChangeWindowDays={days => setGraphSource(prev => (prev.kind === 'live' ? { ...prev, windowDays: days, nonce: 0 } : { kind: 'live', key: entityKey, windowDays: days, t0: userProfile.t0 || '', nonce: 0 }))}
-        t0={t0Param || userProfile.t0 || ''}
-        showT0Picker={!!status && status.dataSource !== 'demo'}
-        onChangeT0={t0 => setGraphSource(prev => (prev.kind === 'live' ? { ...prev, t0, nonce: 0 } : prev))}
         isDarkMode={isDarkMode}
         onToggleDarkMode={() => setIsDarkMode(prev => !prev)}
         onOpenGlobalSearch={() => setGlobalSearchOpen(true)}
@@ -490,7 +677,7 @@ export default function App() {
         userProfile={userProfile}
         timeToContextMs={timeToContextMs}
         loading={loading}
-        onRefresh={graphSource.kind === 'live' ? reloadGraph : undefined}
+        onRefresh={graphSource.kind !== 'case' ? reloadGraph : undefined}
         onQuickReplay={() => {
           setActiveTab('investigation');
           setInvestigationView(pictureView);
@@ -499,8 +686,26 @@ export default function App() {
         }}
       />
 
+      <WindowBar
+        windowStart={userProfile.windowStart || (userProfile.t0 ? new Date(Date.parse(userProfile.t0) - windowHours * 3_600_000).toISOString() : undefined)}
+        windowEnd={userProfile.t0}
+        windowHours={windowHours}
+        isLive={isLive}
+        isSnapshot={graphSource.kind === 'case'}
+        lastRefreshMs={lastRefreshMs}
+        loading={loading}
+        searchQuery={searchQuery}
+        demoMode={status?.dataSource === 'demo'}
+        caseRecord={activeCase}
+        onApply={applyWindow}
+        onRequery={reloadGraph}
+        onToggleLive={toggleLive}
+        onAssignClose={() => setAssignOpen(true)}
+        onExitSearch={graphSource.kind === 'search' ? () => openEntity(availableUsers[0]?.id || initialEntity) : undefined}
+      />
+
       {(notice || loadError) && (
-        <div className="px-6 py-2 text-xs font-mono flex items-center justify-between bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300 border-b border-amber-200 dark:border-amber-900">
+        <div data-testid="notice" className="px-6 py-2 text-xs font-mono flex items-center justify-between bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300 border-b border-amber-200 dark:border-amber-900">
           <span>{loadError ? `Could not load graph: ${loadError}` : notice}</span>
           <button onClick={() => { setNotice(null); setLoadError(null); }} className="font-semibold hover:underline">Dismiss</button>
         </div>
@@ -516,14 +721,14 @@ export default function App() {
               setWatchlist(prev => prev.filter(w => w.id !== id));
             }}
             onAddToWatchlist={(entityId, reason) => {
-              api<{ item: WatchlistItem }>('/api/watchlist', { method: 'POST', body: { entityId, reason, windowDays, t0: t0Param } })
+              api<{ item: WatchlistItem }>('/api/watchlist', { method: 'POST', body: { entityId, reason, windowHours, t0: t0Param } })
                 .then(d => {
                   setWatchlist(prev => [d.item, ...prev.filter(w => w.entityId !== d.item.entityId)]);
                   refreshLists();
                 })
                 .catch(err => setNotice(`Could not add to watchlist: ${err.message}`));
             }}
-            searchParams={{ windowDays, t0: t0Param }}
+            searchParams={{ windowDays: windowDaysApprox, t0: t0Param }}
           />
         )}
 
@@ -531,8 +736,10 @@ export default function App() {
           <div className="flex-1 flex flex-col h-full relative overflow-hidden">
             <div className="flex items-center gap-1 px-3 py-1.5 bg-slate-900 border-b border-slate-800">
               {tabButton('path', 'Attack Path', Route)}
+              {tabButton('story', 'AI Storyline', Wand2)}
               {tabButton('graph', 'Relationship Graph', Share2)}
               {tabButton('timeline', `Event Timeline (${userProfile.edges.length})`, Table2)}
+              {tabButton('notes', `Notes (${notes.length})`, NotebookPen)}
               {timelineNodeFilter && investigationView === 'timeline' && (
                 <button onClick={() => setTimelineNodeFilter(null)} className="ml-2 px-2 py-0.5 rounded bg-slate-800 text-[11px] font-mono text-cyan-300">
                   Filtered to {nodeById.get(timelineNodeFilter)?.name || timelineNodeFilter} ✕
@@ -554,6 +761,7 @@ export default function App() {
                   recordingWatermarkText={replaySettings.titleText || `CASE ${userProfile.id} // ${userProfile.username}`}
                   redactNames={replaySettings.redact}
                   theme={isDarkMode ? 'dark' : 'light'}
+                  verdicts={verdicts}
                 />
               ) : investigationView === 'graph' ? (
                 <TemporalGraphCanvas
@@ -576,6 +784,24 @@ export default function App() {
                   onExpandNode={handleExpandNode}
                   onPinNode={handlePinNode}
                 />
+              ) : investigationView === 'story' ? (
+                <StorylineView
+                  storyline={storyline}
+                  loading={storyLoading}
+                  error={storyError}
+                  status={status}
+                  approvedCaseRef={storyApprovedRef}
+                  onGenerate={generateStoryline}
+                  onApprove={approveStoryline}
+                  onCite={jumpToCitation}
+                />
+              ) : investigationView === 'notes' ? (
+                <NotesPanel
+                  notes={notes}
+                  onAddNote={handleAddNote}
+                  onSelectNode={id => { const n = nodeById.get(id); if (n) { setSelectedNode(n); } }}
+                  caseRef={activeCase?.caseRef}
+                />
               ) : (
                 <TimelineLogTable
                   edges={timelineNodeFilter ? userProfile.edges.filter(e => e.source === timelineNodeFilter || e.target === timelineNodeFilter) : userProfile.edges}
@@ -589,23 +815,24 @@ export default function App() {
                 />
               )}
 
-              {investigationView !== 'timeline' && (
+              {(investigationView === 'path' || investigationView === 'graph') && (
                 <button
                   onClick={() => setDossierOpen(true)}
-                  className={`absolute bottom-16 ${selectedNode ? 'right-[26rem]' : 'right-4'} z-20 flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 font-bold rounded-xl shadow-sm text-xs font-mono transition-all`}
+                  className={`absolute bottom-16 ${selectedNode ? 'right-[27rem]' : 'right-4'} z-20 flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 font-bold rounded-xl shadow-sm text-xs font-mono transition-all`}
                 >
                   <Sparkles className="w-4 h-4" />
                   <span>AI Case Summary</span>
                 </button>
               )}
 
-              {selectedNode && (
+              {selected && (
                 <div className="absolute top-0 right-0 h-full z-20">
                   <NodeDetailDrawer
-                    key={selectedNode.id}
-                    node={userProfile.nodes.find(n => n.id === selectedNode.id) || selectedNode}
+                    key={selected.id}
+                    node={selected}
                     nodes={userProfile.nodes}
                     edges={userProfile.edges}
+                    notes={notes.filter(n => n.nodeId === selected.id)}
                     onClose={() => setSelectedNode(null)}
                     onFilterToNodeTimeline={nodeId => {
                       setTimelineNodeFilter(nodeId);
@@ -613,28 +840,31 @@ export default function App() {
                     }}
                     onExpandNode={handleExpandNode}
                     onPinNode={handlePinNode}
-                    onTagVerdict={handleTagVerdict}
-                    onSaveAnnotation={handleSaveAnnotation}
+                    onSaveVerdict={handleSaveVerdict}
+                    onSaveHypothesis={handleSaveHypothesis}
+                    onSearchEntity={handleSearchEntity}
                   />
                 </div>
               )}
             </div>
 
-            <TimeScrubber
-              currentHour={currentHour}
-              onChangeHour={setCurrentHour}
-              isPlaying={isPlaying}
-              onTogglePlay={() => setIsPlaying(p => !p)}
-              playbackSpeed={playbackSpeed}
-              onChangeSpeed={setPlaybackSpeed}
-              milestones={userProfile.milestones}
-              edges={userProfile.edges}
-              windowHours={windowHours}
-              t0={userProfile.t0}
-              visibleNodeCount={visibleNodes.length}
-              totalNodeCount={userProfile.nodes.length}
-              visibleEdgeCount={visibleEdges.length}
-            />
+            {investigationView !== 'notes' && investigationView !== 'story' && (
+              <TimeScrubber
+                currentHour={currentHour}
+                onChangeHour={setCurrentHour}
+                isPlaying={isPlaying}
+                onTogglePlay={() => setIsPlaying(p => !p)}
+                playbackSpeed={playbackSpeed}
+                onChangeSpeed={setPlaybackSpeed}
+                milestones={userProfile.milestones}
+                edges={userProfile.edges}
+                windowHours={windowHours}
+                t0={userProfile.t0}
+                visibleNodeCount={visibleNodes.length}
+                totalNodeCount={userProfile.nodes.length}
+                visibleEdgeCount={visibleEdges.length}
+              />
+            )}
           </div>
         )}
 
@@ -648,7 +878,7 @@ export default function App() {
             settings={replaySettings}
             onChangeSettings={setReplaySettings}
             recordingMime={pickRecordingMime()}
-            activeCaseRef={cases.find(c => c.id === activeCaseId)?.caseRef || null}
+            activeCaseRef={activeCase?.caseRef || null}
             onStartRecording={startAutomatedRecording}
             onCancelRecording={cancelRecording}
             onRegisterEvidence={registerEvidence}
@@ -674,14 +904,25 @@ export default function App() {
             lastBuildMs={timeToContextMs}
             hosts={userProfile.nodes.filter(n => n.type === 'host').map(n => n.name)}
             ips={userProfile.nodes.filter(n => n.type === 'ip' || n.type === 'domain').map(n => n.name)}
-            windowDays={windowDays}
-            t0={t0Param}
+            windowHours={windowHours}
+            t0={userProfile.t0 || t0Param}
             onGraphChanged={reloadGraph}
+            onBuildGraph={openSearch}
           />
         )}
 
-        {activeTab === 'admin' && <AdminConfigScreen userKey={entityKey} windowDays={windowDays} t0={t0Param} onConfigSaved={reloadGraph} />}
+        {activeTab === 'admin' && <AdminConfigScreen userKey={entityKey} windowDays={windowDaysApprox} t0={t0Param} onConfigSaved={reloadGraph} />}
       </main>
+
+      {assignOpen && (
+        <AssignCloseDialog
+          caseRecord={activeCase}
+          defaultAssignee={status?.analyst || ''}
+          investigationLabel={userProfile.kind === 'search' ? `Log search: ${userProfile.query}` : userProfile.username}
+          onCancel={() => setAssignOpen(false)}
+          onSave={handleAssignClose}
+        />
+      )}
 
       {dossierOpen && (
         <div className="fixed inset-8 bg-white/95 dark:bg-slate-950/95 backdrop-blur-xl border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl z-40 overflow-hidden flex flex-col text-slate-800 dark:text-slate-100">
@@ -693,7 +934,7 @@ export default function App() {
           <div className="flex-1 overflow-y-auto">
             <AICaseDossier
               userProfile={userProfile}
-              entityKey={entityKey}
+              entityKey={investigationKey || entityKey}
               aiConfigured={!!status?.aiConfigured}
               onCitationClick={citId => {
                 setHighlightedCitationId(citId);
@@ -716,14 +957,18 @@ export default function App() {
             <div className="flex items-center px-4 py-3 border-b border-slate-200 dark:border-slate-800 gap-3">
               <Search className="w-5 h-5 text-slate-400" />
               <input
+                data-testid="global-search"
                 type="text"
                 autoFocus
-                placeholder="Search identities or type a username and press Enter..."
+                placeholder="Username, or a log search (e.g. powershell, host.name:pc01)..."
                 value={globalSearchTerm}
                 onChange={e => setGlobalSearchTerm(e.target.value)}
                 onKeyDown={e => {
                   if (e.key === 'Enter' && globalSearchTerm.trim()) {
-                    openEntity(globalSearchTerm.trim());
+                    const t = globalSearchTerm.trim();
+                    // Plain word: open that identity. Anything with field:value, quotes, spaces or wildcards: log search graph
+                    if (/[:"*\s=()]/.test(t)) openSearch(t);
+                    else openEntity(t);
                     setGlobalSearchOpen(false);
                     setGlobalSearchTerm('');
                   }
@@ -733,7 +978,17 @@ export default function App() {
               <kbd className="px-1.5 py-0.5 text-[10px] font-mono bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-slate-400">ESC</kbd>
             </div>
 
-            <div className="p-3 max-h-80 overflow-y-auto space-y-1 text-xs font-mono">
+            <div className="p-3 max-h-96 overflow-y-auto space-y-1 text-xs font-mono">
+              {globalSearchTerm.trim() && (
+                <div
+                  data-testid="search-graph-option"
+                  onClick={() => { openSearch(globalSearchTerm.trim()); setGlobalSearchOpen(false); setGlobalSearchTerm(''); }}
+                  className="flex items-center gap-2.5 p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800/80 cursor-pointer text-slate-700 dark:text-slate-200"
+                >
+                  <Share2 className="w-4 h-4 text-cyan-500" />
+                  <span>Graph log search: <b>{globalSearchTerm.trim()}</b> <span className="text-slate-400">({status?.queryLanguage || 'demo data'}, current window)</span></span>
+                </div>
+              )}
               <div className="text-[10px] uppercase font-bold text-slate-400 px-2 py-1 tracking-wider">Entities</div>
               {availableUsers
                 .filter(u => !globalSearchTerm || u.username.toLowerCase().includes(globalSearchTerm.toLowerCase()) || u.fullName.toLowerCase().includes(globalSearchTerm.toLowerCase()))
@@ -762,7 +1017,7 @@ export default function App() {
 
               <div className="text-[10px] uppercase font-bold text-slate-400 px-2 pt-3 pb-1 tracking-wider">Quick Navigation</div>
               {[
-                { tab: 'integrations' as ViewTab, label: 'Integrations', Icon: Network, color: 'text-cyan-500' },
+                { tab: 'integrations' as ViewTab, label: 'Integrations & query console', Icon: Network, color: 'text-cyan-500' },
                 { tab: 'replay' as ViewTab, label: 'Replay Studio', Icon: Video, color: 'text-purple-500' },
                 { tab: 'cases' as ViewTab, label: 'Cases & Exports', Icon: FolderArchive, color: 'text-blue-500' },
                 { tab: 'admin' as ViewTab, label: 'Admin, Tags & Audit Log', Icon: Settings, color: 'text-slate-400' },

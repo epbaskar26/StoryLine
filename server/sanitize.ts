@@ -3,7 +3,7 @@
 import type { UserProfile, NodeType, CitationAudit } from '../src/types';
 
 const TOKEN_PREFIX: Record<NodeType, string> = {
-  user: 'USER', host: 'HOST', ip: 'IP', application: 'APP', file: 'FILE', process: 'PROC', domain: 'DOMAIN', alert: 'ALERT',
+  user: 'USER', host: 'HOST', ip: 'IP', application: 'APP', file: 'FILE', process: 'PROC', domain: 'DOMAIN', alert: 'ALERT', query: 'QUERY',
 };
 
 export interface TokenizedContext {
@@ -38,6 +38,7 @@ export function tokenizeProfile(profile: UserProfile, privacyMode: boolean): Tok
   const replacements: [string, string][] = [];
 
   const rootId =
+    profile.rootId ??
     profile.nodes.find(n => n.type === 'user' && n.name.toLowerCase() === profile.username.toLowerCase())?.id ??
     profile.nodes.find(n => n.type === 'user')?.id;
   const orderedNodes = [...profile.nodes].sort((a, b) => (a.id === rootId ? -1 : b.id === rootId ? 1 : 0));
@@ -85,7 +86,7 @@ export function tokenizeProfile(profile: UserProfile, privacyMode: boolean): Tok
       ].filter(Boolean);
       return {
         id: e.id,
-        t: `T-${String(e.hour).padStart(2, '0')}:00`,
+        t: e.firstSeen || `T-${String(e.hour).padStart(2, '0')}:00`,
         fact: `${name(e.source)} ${e.type} ${name(e.target)}${attrs.length ? ` (${attrs.join(', ')})` : ''}`,
         protocol: privacyMode ? text(e.protocol) : e.protocol,
         count: e.eventCount,
@@ -158,7 +159,18 @@ export function auditCitations(summary: string, profile: UserProfile): CitationA
 }
 
 // Deterministic summary built only from the graph, used when no AI key is configured or the model call fails.
-export function deterministicSummary(profile: UserProfile): string {
+// Absolute time in the analyst's time zone (sent by the browser), e.g. "27 Sep, 01:05 IST"
+export function formatInZone(iso: string | undefined, tz?: string): string {
+  const ms = Date.parse(iso || '');
+  if (!Number.isFinite(ms)) return '-';
+  try {
+    return new Intl.DateTimeFormat('en-GB', { timeZone: tz || 'UTC', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false, timeZoneName: 'short' }).format(new Date(ms));
+  } catch {
+    return new Date(ms).toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
+  }
+}
+
+export function deterministicSummary(profile: UserProfile, tz?: string): string {
   const root = profile.nodes.find(n => n.type === 'user' && n.name === profile.username) || profile.nodes[0];
   const rootCite = root ? ` [${root.id}]` : '';
   const factors = [...profile.contributingFactors].sort((a, b) => b.weight - a.weight);
@@ -171,7 +183,7 @@ export function deterministicSummary(profile: UserProfile): string {
     : `${profile.username}${rootCite} scored ${profile.riskScore}/100 (${profile.riskBand}); no risk indicators fired in the last ${profile.windowHours ?? 48} h.`;
 
   const timeline = (risky.length ? risky : [...profile.edges].sort((a, b) => b.hour - a.hour)).slice(0, 10).map(e =>
-    `- **T-${String(e.hour).padStart(2, '0')}:00:** ${nodeName(e.source)} ${e.type} ${nodeName(e.target)} (${e.eventCount} event(s), ${e.status}) [${e.id}]`,
+    `- **${formatInZone(e.firstSeen, tz)}:** ${nodeName(e.source)} ${e.type} ${nodeName(e.target)} (${e.eventCount} event(s), ${e.status}) [${e.id}]`,
   );
 
   const crown = profile.nodes.filter(n => n.isCrownJewel);

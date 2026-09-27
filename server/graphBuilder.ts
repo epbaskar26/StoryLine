@@ -2,7 +2,8 @@
 import crypto from 'node:crypto';
 import type { NormalizedEvent } from './normalize';
 import { basename } from './normalize';
-import type { NodeType, EdgeType, SecurityNode, SecurityEdge, SecurityMilestone, UserProfile, ContributingFactor } from '../src/types';
+import type { NodeType, EdgeType, SecurityNode, SecurityEdge, SecurityMilestone, UserProfile, ContributingFactor, ProcessExecution } from '../src/types';
+import { analyzeCommand } from '../src/commandInsight';
 import { evaluateIndicators, scoreEntity, bandFor, DEFAULT_THRESHOLDS, NOT_IMPLEMENTED_INDICATORS, type EdgeDraft, type RiskThresholds } from './risk';
 
 export interface AlertRecord {
@@ -30,6 +31,8 @@ export interface BuildInput {
   maxEdges?: number;
   dataSource?: 'splunk' | 'elastic';
   sourceLabel?: string;
+  searchMode?: boolean; // graph of an analyst's log search: one node per matched identity instead of one root user
+  query?: string;
 }
 
 interface NodeDraft {
@@ -45,8 +48,11 @@ interface NodeDraft {
 }
 
 const PREFIX: Record<NodeType, string> = {
-  user: 'u', host: 'host', ip: 'ip', application: 'app', file: 'file', process: 'proc', domain: 'dom', alert: 'alert',
+  user: 'u', host: 'host', ip: 'ip', application: 'app', file: 'file', process: 'proc', domain: 'dom', alert: 'alert', query: 'q',
 };
+
+const MAX_EXECUTIONS_PER_PROCESS = 50;
+const MAX_COMMAND_CHARS = 32768;
 
 const LOGON_TYPES: Record<string, string> = {
   '2': 'Interactive', '3': 'Network', '4': 'Batch', '5': 'Service', '7': 'Unlock', '8': 'NetworkCleartext',
@@ -107,7 +113,7 @@ export function buildProfile(input: BuildInput): UserProfile {
     }
     n.firstMs = Math.min(n.firstMs, ts);
     n.lastMs = Math.max(n.lastMs, ts);
-    for (const [k, v] of Object.entries(details)) if (v && !n.details[k]) n.details[k] = v.slice(0, 300);
+    for (const [k, v] of Object.entries(details)) if (v && !n.details[k]) n.details[k] = v.slice(0, 4000);
     return n;
   };
 
@@ -136,35 +142,80 @@ export function buildProfile(input: BuildInput): UserProfile {
   };
 
   const rootTs = events[0]?.tsMs ?? t0Ms - windowHours * HOUR_MS;
-  const root = node('user', username, rootTs, {}, 'Investigated identity');
+  const searchMode = !!input.searchMode;
+  const root = searchMode
+    ? node('query', `Search: ${(input.query || '*').replace(/\s+/g, ' ').slice(0, 60)}`, t0Ms - windowHours * HOUR_MS, { Query: (input.query || '*').slice(0, 2000) }, 'Log search')
+    : node('user', username, rootTs, {}, 'Investigated identity');
   const authHostCounts = new Map<string, number>();
   const privilegedGroups = new Set<string>();
+  const executions = new Map<string, Map<string, ProcessExecution>>();
+  let skippedScriptBlocks = 0;
+
+  // Who performed the event: the investigated user, or (search graphs) the identity in the event
+  const actor = (ev: NormalizedEvent): NodeDraft => {
+    if (!searchMode) return root;
+    if (!ev.user) return root;
+    const u = node('user', ev.user, ev.tsMs, {}, 'Matched identity');
+    edge('MATCHED', root, u, ev, { protocol: 'Search match' });
+    return u;
+  };
+
+  const addExecution = (p: NodeDraft, ev: NormalizedEvent) => {
+    if (!ev.commandLine) return;
+    const list = executions.get(p.key) || executions.set(p.key, new Map()).get(p.key)!;
+    const cmd = ev.commandLine.slice(0, MAX_COMMAND_CHARS);
+    const prev = list.get(cmd);
+    if (prev) {
+      prev.count++;
+      prev.lastTs = ev.ts;
+    } else if (list.size < MAX_EXECUTIONS_PER_PROCESS) {
+      list.set(cmd, { ts: ev.ts, commandLine: cmd, parent: ev.parentProcess, user: ev.user, eventId: ev.id, count: 1, source: ev.source });
+    }
+  };
+
+  const processKey = (image: string, host: string) => `process:${`${basename(image)} @ ${host}`.toLowerCase()}`;
+  const processNode = (image: string, host: string, ts: number) =>
+    node('process', `${basename(image)} @ ${host}`, ts, { Image: image, Host: host });
 
   for (const ev of events) {
     const actorHost = ev.host ? node('host', ev.host, ev.tsMs, { Host: ev.host }) : undefined;
+    const who = actor(ev);
     switch (ev.category) {
       case 'auth': {
         const targetName = ev.destHost || ev.host;
         if (targetName) {
           const h = node('host', targetName, ev.tsMs, { Host: targetName });
           const lt = ev.logonType ? LOGON_TYPES[ev.logonType] || `Type ${ev.logonType}` : ev.sourcetype;
-          edge(ev.outcome === 'failure' ? 'AUTH_FAIL' : 'AUTH_SUCCESS', root, h, ev, { protocol: lt, logonType: ev.logonType, srcIp: ev.srcIp, code: ev.eventCode });
+          edge(ev.outcome === 'failure' ? 'AUTH_FAIL' : 'AUTH_SUCCESS', who, h, ev, { protocol: lt, logonType: ev.logonType, srcIp: ev.srcIp, code: ev.eventCode });
           if (ev.outcome === 'success') authHostCounts.set(targetName, (authHostCounts.get(targetName) || 0) + 1);
         }
         if (ev.srcIp) {
           const ip = node('ip', ev.srcIp, ev.tsMs, { Scope: isPrivateIp(ev.srcIp) ? 'Internal' : 'External' });
-          edge('FROM_IP', root, ip, ev, { protocol: ev.sourcetype, outcome: ev.outcome });
+          edge('FROM_IP', who, ip, ev, { protocol: ev.sourcetype, outcome: ev.outcome });
         }
         break;
       }
       case 'process': {
         if (!ev.process) break;
         const hostName = ev.host || 'unknown-host';
-        const p = node('process', `${basename(ev.process)} @ ${hostName}`, ev.tsMs, {
-          Image: ev.process, Host: hostName, Parent: ev.parentProcess || '', SampleCommandLine: ev.commandLine || '',
-        });
-        edge('EXECUTED', root, p, ev, { protocol: 'Process start' }, 0, ev.commandLine);
-        if (actorHost) edge('RAN_ON', p, actorHost, ev, { protocol: 'Host' });
+        if (ev.scriptBlock) {
+          // Script blocks enrich the PowerShell process already in the graph; alone they only count when suspicious
+          const existing = nodes.get(processKey(ev.process, hostName));
+          if (existing) { addExecution(existing, ev); break; }
+          if (analyzeCommand(ev.commandLine || '', { scriptBlock: true }).severity === 'info' || analyzeCommand(ev.commandLine || '', { scriptBlock: true }).severity === 'low') { skippedScriptBlocks++; break; }
+        }
+        const p = processNode(ev.process, hostName, ev.tsMs);
+        if (ev.parentProcess) p.details.Parent ||= ev.parentProcess;
+        addExecution(p, ev);
+        // Child of a process already in the graph: draw the parent -> child chain, so the path continues
+        // from the malicious process instead of stopping at the first executable.
+        const parent = ev.parentProcess ? nodes.get(processKey(ev.parentProcess, hostName)) : undefined;
+        if (parent && parent !== p) {
+          edge('SPAWNED', parent, p, ev, { protocol: 'Child process' }, 0, ev.commandLine);
+        } else {
+          edge('EXECUTED', who, p, ev, { protocol: ev.scriptBlock ? 'Script block' : 'Process start' }, 0, ev.commandLine);
+          if (actorHost) edge('RAN_ON', p, actorHost, ev, { protocol: 'Host' });
+        }
         break;
       }
       case 'network':
@@ -174,7 +225,9 @@ export function buildProfile(input: BuildInput): UserProfile {
         const tgt = ev.category === 'dns' || (!ev.destIp && ev.destHost)
           ? node('domain', destName, ev.tsMs, { Domain: destName })
           : node('ip', destName, ev.tsMs, { Scope: isPrivateIp(destName) ? 'Internal' : 'External' });
-        edge('CONNECTED_TO', actorHost || root, tgt, ev, { protocol: ev.category === 'dns' ? 'DNS' : ev.destPort ? `TCP/${ev.destPort}` : ev.sourcetype, action: ev.action }, ev.bytesOut || 0);
+        // Attribute the connection to the process that made it when the log says which one (Sysmon 3/22)
+        const from = ev.process && ev.host ? processNode(ev.process, ev.host, ev.tsMs) : actorHost || who;
+        edge('CONNECTED_TO', from, tgt, ev, { protocol: ev.category === 'dns' ? 'DNS' : ev.destPort ? `TCP/${ev.destPort}` : ev.sourcetype, action: ev.action }, ev.bytesOut || 0);
         break;
       }
       case 'web': {
@@ -182,24 +235,25 @@ export function buildProfile(input: BuildInput): UserProfile {
         const d = node('domain', ev.domain, ev.tsMs, { Domain: ev.domain });
         const bytes = ev.bytesOut || 0;
         const isUpload = bytes >= 1024 * 1024;
-        edge(isUpload ? 'UPLOADED' : 'CONNECTED_TO', isUpload ? root : actorHost || root, d, ev, { protocol: 'HTTP(S)', action: ev.action }, bytes, ev.url);
+        edge(isUpload ? 'UPLOADED' : 'CONNECTED_TO', isUpload ? who : actorHost || who, d, ev, { protocol: 'HTTP(S)', action: ev.action }, bytes, ev.url);
         break;
       }
       case 'file': {
         if (!ev.filePath) break;
         const f = node('file', basename(ev.filePath) || ev.filePath, ev.tsMs, { Path: ev.filePath, Host: ev.host || '' });
-        edge('ACCESSED', root, f, ev, { protocol: ev.sourcetype });
+        if (ev.process && ev.host) edge('WROTE', processNode(ev.process, ev.host, ev.tsMs), f, ev, { protocol: ev.source || ev.sourcetype });
+        else edge('ACCESSED', who, f, ev, { protocol: ev.sourcetype });
         break;
       }
       case 'account_change': {
         const g = node('user', ev.group || `group-change-${ev.eventCode}`, ev.tsMs, { EventCode: ev.eventCode || '' }, 'Group');
-        edge('MEMBER_CHANGE', root, g, ev, { protocol: `EventCode ${ev.eventCode}` });
+        edge('MEMBER_CHANGE', who, g, ev, { protocol: `EventCode ${ev.eventCode}` });
         if (ev.group && /admin/i.test(ev.group)) privilegedGroups.add(ev.group);
         break;
       }
       case 'alert': {
         const a = node('alert', ev.signature || 'Alert', ev.tsMs, { Source: ev.sourcetype });
-        edge('TRIGGERED', root, a, ev, { protocol: ev.sourcetype, severity: 'MEDIUM' });
+        edge('TRIGGERED', who, a, ev, { protocol: ev.sourcetype, severity: 'MEDIUM' });
         break;
       }
       default:
@@ -224,9 +278,30 @@ export function buildProfile(input: BuildInput): UserProfile {
   }
 
   // Risk indicators
-  const indicators = evaluateIndicators(events, Array.from(edges.values()), edgeKeysByEvent, input.riskWeights, input.thresholds || DEFAULT_THRESHOLDS);
-  const vip = input.vipEntities.some(v => v.toLowerCase().split('@')[0] === username.toLowerCase());
-  const { score, band } = scoreEntity(indicators, { vip, privileged: privilegedGroups.size > 0 });
+  const thresholds = input.thresholds || DEFAULT_THRESHOLDS;
+  let indicators: ReturnType<typeof evaluateIndicators>;
+  let score: number;
+  let band: 'LOW' | 'MEDIUM' | 'HIGH';
+  const vip = !searchMode && input.vipEntities.some(v => v.toLowerCase().split('@')[0] === username.toLowerCase());
+  if (!searchMode) {
+    indicators = evaluateIndicators(events, Array.from(edges.values()), edgeKeysByEvent, input.riskWeights, thresholds);
+    ({ score, band } = scoreEntity(indicators, { vip, privileged: privilegedGroups.size > 0 }));
+  } else {
+    // Search graphs: score each matched identity on its own events, so one user's failures and another's
+    // success are never read as a brute force. The graph score is the highest identity score.
+    indicators = [];
+    score = 0;
+    const byUser = new Map<string, NormalizedEvent[]>();
+    for (const ev of events) if (ev.user) byUser.set(ev.user, [...(byUser.get(ev.user) || []), ev]);
+    for (const [user, evs] of Array.from(byUser.entries()).slice(0, 50)) {
+      const ids = new Set(evs.map(e => e.id));
+      const userEdges = Array.from(edges.values()).filter(e => e.type !== 'MATCHED' && (e.samples || []).some(([, id]) => ids.has(id)));
+      const found = evaluateIndicators(evs, userEdges, edgeKeysByEvent, input.riskWeights, thresholds).map(i => ({ ...i, description: `${user}: ${i.description}` }));
+      indicators.push(...found);
+      score = Math.max(score, scoreEntity(found, {}).score);
+    }
+    band = bandFor(score);
+  }
 
   // Which events fired which indicator (for per-visit colouring in the Attack Path view)
   const eventRisk = new Map<string, { severity: 'critical' | 'anomalous'; ttp: string }>();
@@ -331,6 +406,7 @@ export function buildProfile(input: BuildInput): UserProfile {
         isCrownJewel: n.isCrownJewel,
         isVip: isRoot ? vip : undefined,
         details: n.details,
+        executions: executions.has(n.key) ? Array.from(executions.get(n.key)!.values()).sort((a, b) => a.ts.localeCompare(b.ts)) : undefined,
       };
     });
 
@@ -376,14 +452,16 @@ export function buildProfile(input: BuildInput): UserProfile {
     baselineAvailable ? 'Baseline: compared against the user\'s earlier history.' : 'Baseline unavailable (no earlier history found): first-seen indicators are disabled.',
     `Not yet implemented: ${NOT_IMPLEMENTED_INDICATORS.join('; ')}.`,
   ];
+  if (skippedScriptBlocks) notes.push(`${skippedScriptBlocks} PowerShell script block(s) with no suspicious content were not drawn (no matching PowerShell process in the window).`);
+  if (searchMode) notes.push('Search graph: every identity in the results is shown; risk is scored per identity and the highest score is used.');
   if (truncated) notes.push(`Graph truncated to ${outNodes.length} nodes / ${outEdges.length} edges (from ${nodes.size} / ${edges.size}); highest-risk edges kept.`);
 
   return {
     id: root.id,
     canonicalId: root.id.toUpperCase(),
     username,
-    fullName: username,
-    role: 'Unknown (no IdP context)',
+    fullName: searchMode ? `Log search: ${input.query || '*'}` : username,
+    role: searchMode ? 'Log search' : 'Unknown (no IdP context)',
     department: 'Unknown',
     baselineLocation: 'Unknown',
     device,
@@ -392,7 +470,7 @@ export function buildProfile(input: BuildInput): UserProfile {
     isVip: vip,
     isPrivileged: privilegedGroups.size > 0,
     alertSummary: top.length ? top.slice(0, 3).map(f => f.indicator).join(' · ') : 'No risk indicators fired in this window',
-    triggerEvent: top[0]?.indicator || (alerts[0]?.alertType ?? 'Analyst-initiated investigation'),
+    triggerEvent: top[0]?.indicator || (alerts[0]?.alertType ?? (searchMode ? 'Analyst log search' : 'Analyst-initiated investigation')),
     aliases: [username],
     nodes: outNodes,
     edges: outEdges,
@@ -407,5 +485,9 @@ export function buildProfile(input: BuildInput): UserProfile {
     totalEdgeCount: edges.size,
     baselineAvailable,
     notes,
+    rootId: root.id,
+    kind: searchMode ? 'search' : 'entity',
+    query: searchMode ? input.query : undefined,
+    windowStart: new Date(t0Ms - windowHours * HOUR_MS).toISOString(),
   };
 }

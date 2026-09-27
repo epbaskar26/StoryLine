@@ -50,7 +50,7 @@ export const AICaseDossier: React.FC<Props> = ({
     try {
       const data = await api<{ summary: string; engine: string; citationAudit: CitationAudit; sanitizedContext: unknown; sentToModel: boolean }>('/api/gemini/case-summary', {
         method: 'POST',
-        body: { profile: userProfile, privacyModeEnabled: privacyMode },
+        body: { profile: userProfile, privacyModeEnabled: privacyMode, tz: Intl.DateTimeFormat().resolvedOptions().timeZone },
       });
       setSummary(data.summary);
       setEngineUsed(data.engine);

@@ -92,6 +92,12 @@ reg add "HKLM\Software\Microsoft\Windows\CurrentVersion\Policies\System\Audit" /
 
 This gives event 4688 with command lines, which WatchMe uses to detect encoded PowerShell.
 
+Optional: PowerShell script block logging (event 4104) records the script text PowerShell actually ran, including decoded `-EncodedCommand` payloads. WatchMe attaches these to the PowerShell process and shows them in its command lines:
+
+```powershell
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging" /v EnableScriptBlockLogging /t REG_DWORD /d 1 /f
+```
+
 ## 5. Install Sysmon (optional, better data)
 
 Sysmon adds process, network connection, file and DNS events (event IDs 1, 3, 11, 22). WatchMe uses them for C2 connections, domains and file activity.

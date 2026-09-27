@@ -29,6 +29,8 @@ export interface NormalizedEvent {
   group?: string;
   signature?: string;
   action?: string;
+  scriptBlock?: boolean; // PowerShell 4104: commandLine holds script block text
+  source?: string; // short provenance label, e.g. "Sysmon 1"
 }
 
 const EMPTY = new Set(['', '-', 'n/a', 'null', 'unknown', '::1', '127.0.0.1', '0.0.0.0', '::']);
