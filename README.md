@@ -4,7 +4,7 @@ Identity-centric investigation tool for SOC analysts: pick a user, and WatchMe b
 
 ## Quick start (demo data, no setup)
 
-Prerequisite: Node.js 20 or later.
+Prerequisite: Node.js 20 or later (Vite 6 is used so older Node 20 releases work).
 
 ```bash
 npm install
