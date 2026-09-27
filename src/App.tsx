@@ -479,7 +479,7 @@ export default function App() {
         activeWindowDays={windowDays}
         onChangeWindowDays={days => setGraphSource(prev => (prev.kind === 'live' ? { ...prev, windowDays: days, nonce: 0 } : { kind: 'live', key: entityKey, windowDays: days, t0: userProfile.t0 || '', nonce: 0 }))}
         t0={t0Param || userProfile.t0 || ''}
-        showT0Picker={status?.dataSource === 'splunk'}
+        showT0Picker={!!status && status.dataSource !== 'demo'}
         onChangeT0={t0 => setGraphSource(prev => (prev.kind === 'live' ? { ...prev, t0, nonce: 0 } : prev))}
         isDarkMode={isDarkMode}
         onToggleDarkMode={() => setIsDarkMode(prev => !prev)}

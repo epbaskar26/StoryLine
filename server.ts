@@ -8,8 +8,8 @@ import crypto from 'crypto';
 
 import type { UserProfile, WatchlistItem, CaseRecord, EntitySummary, SecurityNode, SecurityEdge, SystemStatus, EvidenceRecord } from './src/types';
 import { DEMO_USERS, DEMO_WATCHLIST, DEMO_CASES, DEMO_AUDIT, DEFAULT_ADMIN_CONFIG, type AdminConfig, type ConnectorConfig } from './server/demoData';
-import { loadSplunkConfig, fetchUserEvents, fetchBaseline, fetchEntityEvents, searchUsers, runAdhocQuery, testConnection, assertSafeEntity } from './server/splunk';
-import { normalizeRows } from './server/normalize';
+import { assertSafeEntity } from './server/splunk';
+import { loadLogSource } from './server/sources';
 import { buildProfile, opaqueId, type AlertRecord } from './server/graphBuilder';
 import { tokenizeProfile, rehydrate, auditCitations, deterministicSummary } from './server/sanitize';
 import { createStore } from './server/store';
@@ -22,8 +22,15 @@ const __dirname = path.dirname(__filename);
 // ----------------- Configuration -----------------
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const HOST = process.env.HOST || '127.0.0.1'; // local-only by default: there is no login yet
-const SPLUNK = loadSplunkConfig();
-const DATA_SOURCE: 'demo' | 'splunk' = (process.env.DATA_SOURCE as 'demo' | 'splunk') || (SPLUNK ? 'splunk' : 'demo');
+let loaded: ReturnType<typeof loadLogSource>;
+try {
+  loaded = loadLogSource();
+} catch (err: any) {
+  console.error(err.message);
+  process.exit(1);
+}
+const DATA_SOURCE = loaded.dataSource; // 'demo' | 'splunk' | 'elastic'
+const SOURCE = loaded.source; // live log source, or null in demo mode
 const ANALYST = process.env.WATCHME_ANALYST || 'local.analyst';
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || '';
 const BASELINE_DAYS = parseInt(process.env.BASELINE_DAYS || '30', 10);
@@ -31,11 +38,6 @@ const DEFAULT_T0 = process.env.DEFAULT_T0 || ''; // e.g. 2018-08-21T00:00:00Z fo
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
 const CACHE_TTL_MS = parseInt(process.env.GRAPH_CACHE_TTL_MS || '300000', 10);
 const HOUR_MS = 3_600_000;
-
-if (DATA_SOURCE === 'splunk' && !SPLUNK) {
-  console.error('DATA_SOURCE=splunk requires SPLUNK_URL (and credentials). See .env.example.');
-  process.exit(1);
-}
 
 const app = express();
 app.disable('x-powered-by');
@@ -142,8 +144,8 @@ async function buildDemoProfile(entityKey: string, windowHours: number, t0Ms: nu
   p.edges.forEach(e => { e.source = idMap.get(e.source) || e.source; e.target = idMap.get(e.target) || e.target; });
   // Link demo factors to the edges that carry their event ids
   p.contributingFactors.forEach(f => { f.edgeIds = p.edges.filter(e => (e.eventIds || []).some(id => f.eventIds.includes(id))).map(e => e.id); });
-  p.notes = ['DEMO DATA: fictional users, hosts and events. Set DATA_SOURCE=splunk to investigate real logs.'];
-  if (windowHours !== demoHours) p.notes.push('The demo dataset only covers 48 hours; the 7-day window applies to Splunk data.');
+  p.notes = ['DEMO DATA: fictional users, hosts and events. Set DATA_SOURCE=splunk or elastic to investigate real logs.'];
+  if (windowHours !== demoHours) p.notes.push('The demo dataset only covers 48 hours; the 7-day window applies to live data.');
   p.totalEventCount = p.edges.reduce((s, e) => s + e.eventCount, 0);
   const rootId = p.nodes.find(n => n.type === 'user')?.id || p.id;
   for (const al of await store.listAlerts(entityKey)) {
@@ -154,22 +156,21 @@ async function buildDemoProfile(entityKey: string, windowHours: number, t0Ms: nu
   return p;
 }
 
-async function buildSplunkProfile(entityKey: string, windowHours: number, t0Ms: number): Promise<UserProfile> {
-  const cfg = SPLUNK!;
+async function buildLiveProfile(entityKey: string, windowHours: number, t0Ms: number): Promise<UserProfile> {
+  const src = SOURCE!;
   const start = t0Ms - windowHours * HOUR_MS;
-  const rows = await fetchUserEvents(cfg, entityKey, start / 1000, t0Ms / 1000);
-  const events = normalizeRows(rows);
+  const { events, rawCount } = await src.fetchUserEvents(entityKey, start, t0Ms);
   const alerts = (await store.listAlerts(entityKey)).filter(a => {
     const ts = Date.parse(a.ts);
     return ts >= start && ts <= t0Ms;
   });
   if (!events.length && !alerts.length) {
-    throw new HttpError(404, `No Splunk events found for "${entityKey}" between ${new Date(start).toISOString()} and ${new Date(t0Ms).toISOString()} in index ${cfg.index}. Check the username, the index, and T-0 (BOTS data is from past years).`);
+    throw new HttpError(404, `No ${src.label} events found for "${entityKey}" between ${new Date(start).toISOString()} and ${new Date(t0Ms).toISOString()} in ${src.location}. Check the username, the index, and T-0 (historical datasets such as BOTS need an explicit T-0).`);
   }
   let baseline: Set<string> | null = null;
   if (BASELINE_DAYS > 0) {
     try {
-      baseline = await fetchBaseline(cfg, entityKey, (start - BASELINE_DAYS * 24 * HOUR_MS) / 1000, start / 1000);
+      baseline = await src.fetchBaseline(entityKey, start - BASELINE_DAYS * 24 * HOUR_MS, start);
     } catch (err: any) {
       console.warn('Baseline query failed:', err.message);
     }
@@ -185,8 +186,10 @@ async function buildSplunkProfile(entityKey: string, windowHours: number, t0Ms: 
     crownJewelTags: config.crownJewelTags,
     vipEntities: config.vipEntities,
     riskWeights: config.riskWeights,
+    dataSource: src.kind,
+    sourceLabel: src.label,
   });
-  if (rows.length >= cfg.maxEvents) profile.notes?.push(`Splunk returned the maximum of ${cfg.maxEvents} events; older activity may be missing (raise SPLUNK_MAX_EVENTS).`);
+  if (rawCount >= src.maxEvents) profile.notes?.push(`${src.label} returned the maximum of ${src.maxEvents} events; older activity may be missing (raise ${src.kind.toUpperCase()}_MAX_EVENTS).`);
   return profile;
 }
 
@@ -197,7 +200,7 @@ async function getProfile(entityKey: string, windowHours: number, t0Ms: number, 
     return { profile: await withAnnotations(entityKey, hit.profile), buildMs: 0, cached: true };
   }
   const started = Date.now();
-  const profile = DATA_SOURCE === 'demo' ? await buildDemoProfile(entityKey, windowHours, t0Ms) : await buildSplunkProfile(entityKey, windowHours, t0Ms);
+  const profile = DATA_SOURCE === 'demo' ? await buildDemoProfile(entityKey, windowHours, t0Ms) : await buildLiveProfile(entityKey, windowHours, t0Ms);
   const buildMs = Date.now() - started;
   lastGraphBuildMs = buildMs;
   profileCache.set(key, { profile, builtAt: Date.now() });
@@ -234,7 +237,9 @@ function riskSparkline(p: UserProfile): number[] {
 app.get('/api/status', asyncRoute(async (_req, res) => {
   const status: SystemStatus = {
     dataSource: DATA_SOURCE,
-    splunkConfigured: !!SPLUNK,
+    liveConfigured: !!SOURCE,
+    liveLabel: SOURCE?.label ?? null,
+    queryLanguage: SOURCE?.queryLanguage ?? null,
     storage: store.kind,
     aiConfigured: !!ai,
     analyst: ANALYST,
@@ -273,7 +278,7 @@ app.get('/api/entities/resolve', asyncRoute(async (req, res) => {
   let safeTerm: string;
   try { safeTerm = assertSafeEntity(term); } catch { return res.json({ matches: [] }); }
   const { windowHours, t0Ms } = parseWindow(req);
-  const found = await searchUsers(SPLUNK!, safeTerm, (t0Ms - windowHours * HOUR_MS) / 1000, t0Ms / 1000);
+  const found = await SOURCE!.searchUsers(safeTerm, t0Ms - windowHours * HOUR_MS, t0Ms);
   res.json({
     matches: found.map(f => ({
       id: f.user, canonicalId: f.user, username: f.user, fullName: f.user, role: `${f.count} events in window`,
@@ -339,7 +344,7 @@ app.post('/api/graph/expand', asyncRoute(async (req, res) => {
   if (!node) throw new HttpError(404, `Node ${nodeId} is not in the current graph`);
 
   if (DATA_SOURCE === 'demo') {
-    return res.json({ nodes: [], edges: [], message: 'Demo mode: 1-hop expansion needs a live data source (DATA_SOURCE=splunk).' });
+    return res.json({ nodes: [], edges: [], message: 'Demo mode: 1-hop expansion needs a live data source (DATA_SOURCE=splunk or elastic).' });
   }
   if (!['host', 'ip', 'domain'].includes(node.type)) {
     return res.json({ nodes: [], edges: [], message: `Expansion is supported for host, IP and domain nodes (this is a ${node.type}).` });
@@ -347,8 +352,7 @@ app.post('/api/graph/expand', asyncRoute(async (req, res) => {
 
   const hours = profile.windowHours ?? windowHours;
   const t0 = Date.parse(profile.t0 || '') || t0Ms;
-  const rows = await fetchEntityEvents(SPLUNK!, node.name, (t0 - hours * HOUR_MS) / 1000, t0 / 1000);
-  const events = normalizeRows(rows).filter(e => e.user && e.user !== entityKey);
+  const events = (await SOURCE!.fetchEntityEvents(node.name, t0 - hours * HOUR_MS, t0)).filter(e => e.user && e.user !== entityKey);
   const hourOf = (ms: number) => Math.max(0, Math.min(hours, Math.ceil((t0 - ms) / HOUR_MS)));
   const existing = new Set(profile.nodes.map(n => n.id));
   const newNodes = new Map<string, SecurityNode>();
@@ -489,12 +493,13 @@ app.post('/api/cases/:id/push', asyncRoute(async (req, res) => {
 
 // ----------------- API: admin & audit (FR-24, section 12) -----------------
 function liveConnectors(): ConnectorConfig[] {
-  if (!SPLUNK) return [];
+  if (!SOURCE) return [];
+  const c = SOURCE.connector;
   return [{
-    id: 'conn-splunk-live', name: 'Splunk (live)', vendor: 'Splunk', category: 'SIEM', type: 'SIEM',
-    status: DATA_SOURCE === 'splunk' ? 'CONNECTED' : 'STANDBY', eps: 0, lagMs: 0, lastSync: 'on demand',
-    authType: SPLUNK.token ? 'Bearer token' : 'Basic (username/password)', endpoint: `${SPLUNK.baseUrl}/services/search/jobs/export`,
-    eventsConsumed: `index ${SPLUNK.index}: Windows Security, Sysmon, CIM fields`, health: 'Query on demand', alertsBuffered: 0, simulated: false,
+    id: c.id, name: c.name, vendor: c.vendor, category: 'SIEM', type: 'SIEM',
+    status: 'CONNECTED', eps: 0, lagMs: 0, lastSync: 'on demand',
+    authType: c.authType, endpoint: c.endpoint,
+    eventsConsumed: c.eventsConsumed, health: 'Query on demand', alertsBuffered: 0, simulated: false,
   }];
 }
 
@@ -600,27 +605,15 @@ app.post('/api/integrations/contain/block-indicator', asyncRoute(async (req, res
   res.json({ indicator, ...simulatedContainment('Blocking', indicator, tool) });
 }));
 
-// Query console: real for Splunk (when configured); other engines return clearly-labelled sample rows.
+// Query console: real for the configured live source; other engines return clearly-labelled sample rows.
 app.post('/api/integrations/query', asyncRoute(async (req, res) => {
-  const tool = String(req.body.tool || 'splunk');
+  const tool = String(req.body.tool || SOURCE?.kind || 'splunk');
   const query = String(req.body.query || '');
   const { windowHours, t0Ms } = parseWindow(req);
 
-  if (tool === 'splunk' && SPLUNK) {
-    const rows = await runAdhocQuery(SPLUNK, query, (t0Ms - windowHours * HOUR_MS) / 1000, t0Ms / 1000);
-    const logs = rows.map(r => {
-      const g = (k: string) => { const v = r[k]; return Array.isArray(v) ? v[v.length - 1] : v; };
-      const shown = new Set(['_time', 'sourcetype', 'EventCode', 'action', 'host', 'src_ip', 'src', 'IpAddress']);
-      return {
-        timestamp: g('_time') || '',
-        source: g('sourcetype') || '-',
-        action: g('EventCode') || g('action') || '-',
-        host: g('host') || g('ComputerName') || '-',
-        ip: g('src_ip') || g('src') || g('IpAddress') || '-',
-        details: Object.entries(r).filter(([k]) => !shown.has(k) && !k.startsWith('_')).slice(0, 6).map(([k, v]) => `${k}=${Array.isArray(v) ? v.join('|') : v}`).join(' '),
-      };
-    });
-    await audit('RUN_SIEM_QUERY', String(req.body.entityId || '-'), `Ran SPL (${logs.length} rows): ${query.slice(0, 120)}`);
+  if (SOURCE && tool === SOURCE.kind) {
+    const logs = await SOURCE.runAdhocQuery(query, t0Ms - windowHours * HOUR_MS, t0Ms);
+    await audit('RUN_SIEM_QUERY', String(req.body.entityId || '-'), `Ran ${SOURCE.queryLanguage} on ${SOURCE.label} (${logs.length} rows): ${query.slice(0, 120)}`);
     return res.json({ success: true, simulated: false, tool, query, count: logs.length, logs });
   }
 
@@ -632,7 +625,7 @@ app.post('/api/integrations/query', asyncRoute(async (req, res) => {
   await audit('RUN_SIMULATED_QUERY', String(req.body.entityId || '-'), `Simulated ${tool} query (no connector configured)`);
   res.json({
     success: true, simulated: true, tool, query, count: logs.length, logs,
-    message: tool === 'splunk' ? 'Splunk is not configured (set SPLUNK_URL). Showing sample rows.' : `${tool} is not connected yet. Showing sample rows.`,
+    message: `${tool} is not connected${SOURCE ? ` (the live source is ${SOURCE.label})` : ''}. Showing sample rows.`,
   });
 }));
 
@@ -661,12 +654,12 @@ app.delete('/api/integrations/connectors/:id', asyncRoute(async (req, res) => {
 }));
 
 app.post('/api/integrations/test/:connectorId', asyncRoute(async (req, res) => {
-  if (req.params.connectorId === 'conn-splunk-live' && SPLUNK) {
-    const r = await testConnection(SPLUNK);
-    await audit('TEST_CONNECTOR', 'Splunk (live)', `${r.ok ? 'OK' : 'FAILED'}: ${r.message}`);
+  if (req.params.connectorId === 'conn-live' && SOURCE) {
+    const r = await SOURCE.testConnection();
+    await audit('TEST_CONNECTOR', SOURCE.connector.name, `${r.ok ? 'OK' : 'FAILED'}: ${r.message}`);
     return res.json({ success: r.ok, simulated: false, latencyMs: r.latencyMs, message: r.message, error: r.ok ? undefined : r.message });
   }
-  res.json({ success: false, simulated: true, error: 'Simulated connector: there is no real connection to test. Only the live Splunk connector can be tested.' });
+  res.json({ success: false, simulated: true, error: 'Simulated connector: there is no real connection to test. Only the live connector can be tested.' });
 }));
 
 // Re-query the data source for the current entity
@@ -680,7 +673,7 @@ app.post('/api/integrations/sync-entity', asyncRoute(async (req, res) => {
     success: true,
     syncedEventsCount: profile.totalEventCount ?? 0,
     buildMs,
-    message: profile.dataSource === 'demo' ? 'Demo mode: graph reloaded from the demo dataset.' : `Pulled ${profile.totalEventCount} events from Splunk in ${buildMs} ms.`,
+    message: profile.dataSource === 'demo' ? 'Demo mode: graph reloaded from the demo dataset.' : `Pulled ${profile.totalEventCount} events from ${SOURCE?.label} in ${buildMs} ms.`,
   });
 }));
 
@@ -852,7 +845,7 @@ async function startServer() {
 
   app.listen(PORT, HOST, () => {
     console.log(`WatchMe listening on http://${HOST}:${PORT}`);
-    console.log(`  data source: ${DATA_SOURCE}${SPLUNK ? ` (${SPLUNK.baseUrl}, index ${SPLUNK.index})` : ''}`);
+    console.log(`  data source: ${DATA_SOURCE}${SOURCE ? ` (${SOURCE.connector.endpoint})` : ''}`);
     console.log(`  storage:     ${store.kind}${store.kind === 'memory' ? ' (cases and audit log are lost on restart; set DATABASE_URL for PostgreSQL)' : ''}`);
     console.log(`  AI summary:  ${ai ? GEMINI_MODEL : 'deterministic (no GEMINI_API_KEY)'}`);
   });

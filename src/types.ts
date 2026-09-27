@@ -14,7 +14,7 @@ export type EdgeType =
 
 export type RiskBand = 'LOW' | 'MEDIUM' | 'HIGH';
 
-export type DataSource = 'demo' | 'splunk' | 'snapshot';
+export type DataSource = 'demo' | 'splunk' | 'elastic' | 'snapshot';
 
 export interface ContributingFactor {
   indicator: string;
@@ -190,8 +190,10 @@ export interface CitationAudit {
 }
 
 export interface SystemStatus {
-  dataSource: 'demo' | 'splunk';
-  splunkConfigured: boolean;
+  dataSource: 'demo' | 'splunk' | 'elastic';
+  liveConfigured: boolean;
+  liveLabel: string | null; // e.g. "Splunk" or "Elastic"
+  queryLanguage: string | null; // e.g. "SPL" or "Lucene"
   storage: 'postgres' | 'memory';
   aiConfigured: boolean;
   analyst: string;

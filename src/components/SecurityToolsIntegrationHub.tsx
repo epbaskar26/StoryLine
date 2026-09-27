@@ -110,9 +110,18 @@ export const SecurityToolsIntegrationHub: React.FC<Props> = ({
   const [newConnAuth, setNewConnAuth] = useState('API Key / Bearer');
 
   // SIEM Query Console State
-  const [queryTool, setQueryTool] = useState<'sentinel' | 'splunk' | 'chronicle'>('splunk');
+  const [queryTool, setQueryTool] = useState<'sentinel' | 'splunk' | 'chronicle' | 'elastic'>('splunk');
   const [queryText, setQueryText] = useState(`search (user="${currentEntity}" OR Account_Name="${currentEntity}") EventCode IN (4624, 4625)
 | table _time host EventCode Logon_Type src_ip`);
+  // Default the console to the live source's engine and a matching example query
+  useEffect(() => {
+    if (status?.dataSource === 'elastic') {
+      setQueryTool('elastic');
+      setQueryText(`event.code:(4624 OR 4625) AND user.name:"${currentEntity}"`);
+    } else if (status?.dataSource === 'splunk') {
+      setQueryTool('splunk');
+    }
+  }, [status?.dataSource, currentEntity]);
   const [isExecutingQuery, setIsExecutingQuery] = useState(false);
   const [queryResults, setQueryResults] = useState<any[] | null>(null);
   const [querySimulated, setQuerySimulated] = useState(false);
@@ -426,9 +435,9 @@ and security_result.action = "ALLOW"`);
             Connected Telemetry & Security SOAR Hub
           </h2>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 max-w-3xl leading-relaxed">
-            {status?.splunkConfigured
-              ? 'Splunk is connected and queried on demand to build graphs. Other connectors, containment actions and ticket pushes are simulated placeholders.'
-              : 'No live data source is configured (demo mode). Connector cards, containment actions and non-Splunk queries are simulated placeholders.'}
+            {status?.liveConfigured
+              ? `${status.liveLabel} is connected and queried on demand to build graphs. Other connectors, containment actions and ticket pushes are simulated placeholders.`
+              : 'No live data source is configured (demo mode). Connector cards, containment actions and queries are simulated placeholders.'}
           </p>
         </div>
 
@@ -479,9 +488,9 @@ and security_result.action = "ALLOW"`);
         <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800/80 rounded-xl p-4 shadow-sm">
           <div className="text-slate-500 dark:text-slate-400 text-[11px] font-semibold tracking-wider uppercase mb-1">Data source</div>
           <div className="text-2xl font-extrabold text-slate-900 dark:text-slate-100 font-mono">
-            {status?.dataSource === 'splunk' ? 'Splunk' : 'Demo'} <span className="text-xs text-slate-500 dark:text-slate-400 font-normal"></span>
+            {status?.liveLabel || 'Demo'} <span className="text-xs text-slate-500 dark:text-slate-400 font-normal"></span>
           </div>
-          <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">{status?.splunkConfigured ? 'Queried on demand (no streaming ingest)' : 'Fictional dataset'}</div>
+          <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">{status?.liveConfigured ? 'Queried on demand (no streaming ingest)' : 'Fictional dataset'}</div>
         </div>
         <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800/80 rounded-xl p-4 shadow-sm">
           <div className="text-slate-500 dark:text-slate-400 text-[11px] font-semibold tracking-wider uppercase mb-1">Live connectors</div>
@@ -699,7 +708,7 @@ and security_result.action = "ALLOW"`);
                   <span>SIEM Query Console</span>
                 </h3>
                 <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                  {status?.splunkConfigured ? 'Splunk (SPL) queries run for real over the current window; results are capped at 200 rows. KQL and UDM engines are not connected (sample rows only).' : 'No SIEM is connected: all engines return sample rows.'}
+                  {status?.liveConfigured ? `${status.liveLabel} (${status.queryLanguage}) queries run for real over the current window; results are capped at 200 rows. Other engines are not connected (sample rows only).` : 'No SIEM is connected: all engines return sample rows.'}
                 </p>
               </div>
 
@@ -714,6 +723,7 @@ and security_result.action = "ALLOW"`);
                   <option value="sentinel">Microsoft Sentinel (KQL)</option>
                   <option value="splunk">Splunk ES (SPL)</option>
                   <option value="chronicle">Google SecOps Chronicle (UDM)</option>
+                  <option value="elastic">Elasticsearch (Lucene)</option>
                 </select>
               </div>
             </div>

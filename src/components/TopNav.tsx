@@ -181,7 +181,7 @@ export const TopNav: React.FC<Props> = ({
           </button>
         </div>
 
-        {/* T-0 picker (Splunk mode): historical datasets such as BOTS need an explicit end of window */}
+        {/* T-0 picker (live data): historical datasets such as BOTS need an explicit end of window */}
         {showT0Picker && (
           <label className="flex items-center gap-1 text-[11px] font-mono text-slate-500" title="End of the investigation window (UTC). Leave empty for now.">
             <span>T-0</span>

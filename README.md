@@ -34,19 +34,45 @@ Splunk Free: if WatchMe runs on a different host than Splunk, add `allowRemoteLo
 
 **No Splunk available?** `npm run mock:splunk` starts a mock of the Splunk REST API with a planted attack for user `bgist`. Use `SPLUNK_URL=http://127.0.0.1:8089`, `SPLUNK_USERNAME=admin`, `SPLUNK_PASSWORD=changeme`, `DEFAULT_T0=2018-08-21T00:00:00Z`.
 
+## Live data from Elastic (free, on your own laptop)
+
+Elasticsearch and Kibana run in Docker Desktop; Winlogbeat ships your Windows event logs (Security, Sysmon, PowerShell) into them. Full Windows walkthrough: [docs/ELASTIC_SETUP.md](docs/ELASTIC_SETUP.md).
+
+```powershell
+docker compose -f docker-compose.elastic.yml up -d     # Elasticsearch :9200 + Kibana :5601, localhost only
+# install Winlogbeat 8.19.13 with tools/winlogbeat/winlogbeat.yml (see the guide)
+```
+
+`.env`:
+
+```
+DATA_SOURCE=elastic
+ELASTIC_URL=http://localhost:9200
+ELASTIC_USERNAME=elastic
+ELASTIC_PASSWORD=changeme
+ELASTIC_INDEX=winlogbeat-*
+```
+
+WatchMe reads ECS fields (Winlogbeat's ingest pipelines) and falls back to raw `winlog.event_data.*` fields. The query console uses Lucene syntax, e.g. `event.code:4625 AND user.name:"epbas"`.
+
+**No Elastic available?** `npm run mock:elastic` starts a mock of the search API on port 9200 with a planted attack for user `epbas`, relative to the current time.
+
 ## How it works
 
 ```
 Browser (React + canvas) ──> server.ts (Express API)
+                                ├── server/sources.ts       LogSource interface: picks demo, Splunk or Elastic
                                 ├── server/splunk.ts        SPL over /services/search/jobs/export
-                                ├── server/normalize.ts     Windows Security, Sysmon, CIM fields -> one event shape
+                                ├── server/elastic.ts       Elasticsearch _search (search_after, terms aggs)
+                                ├── server/normalize.ts     Splunk: Windows Security, Sysmon, CIM -> one event shape
+                                ├── server/normalizeEcs.ts  Elastic: ECS / Winlogbeat -> the same event shape
                                 ├── server/graphBuilder.ts  events -> nodes, edges, milestones (opaque ids)
                                 ├── server/risk.ts          explainable indicators (spec section 6)
                                 ├── server/sanitize.ts      tokenization, citation audit, fallback summary
                                 └── server/store.ts         PostgreSQL (DATABASE_URL) or in-memory
 ```
 
-- **Query on demand.** WatchMe does not copy logs. Each investigation runs one SPL search for the user's window plus one baseline search over the previous `BASELINE_DAYS` days. Results are cached for 5 minutes.
+- **Query on demand.** WatchMe does not copy logs. Each investigation runs one search (SPL or Elasticsearch query) for the user's window plus one baseline search over the previous `BASELINE_DAYS` days. Results are cached for 5 minutes.
 - **Risk indicators implemented:** brute force then success, first-seen host/app (x2 for crown jewels), new source IP, lateral fan-out, privilege change, mass file access, large upload, encoded PowerShell, correlated alerts. VIP and privileged multipliers apply. **Not yet implemented:** impossible travel (needs GeoIP), MFA fatigue (needs IdP MFA logs), off-hours activity (needs an activity profile).
 - **Graph size:** capped at 400 nodes / 1,500 edges; the highest-risk edges are kept and the UI says when it is truncated.
 - **AI summary:** with `GEMINI_API_KEY` set, the model receives only tokenized graph facts (USER_1, HOST_2 ...). Names, IPs, emails, paths and account names are scrubbed from free text, and names are restored server-side after the response. Every summary gets a citation check. Without a key, a deterministic summary is built from the graph. The Privacy Inspector shows the exact payload.
@@ -90,3 +116,4 @@ These are clearly labelled **SIMULATED** in the UI and do nothing outside WatchM
 | `npm run build` then `npm start` | Production build served by the same server |
 | `npm run lint` | Type-check |
 | `npm run mock:splunk` | Mock Splunk REST API on port 8089 |
+| `npm run mock:elastic` | Mock Elasticsearch search API on port 9200 |

@@ -28,6 +28,8 @@ export interface BuildInput {
   thresholds?: RiskThresholds;
   maxNodes?: number;
   maxEdges?: number;
+  dataSource?: 'splunk' | 'elastic';
+  sourceLabel?: string;
 }
 
 interface NodeDraft {
@@ -370,7 +372,7 @@ export function buildProfile(input: BuildInput): UserProfile {
   const device = Array.from(authHostCounts.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] || 'Unknown';
   const top = [...factors].sort((a, b) => b.weight - a.weight);
   const notes = [
-    `Built from ${events.length} Splunk event(s) between ${new Date(t0Ms - windowHours * HOUR_MS).toISOString()} and ${new Date(t0Ms).toISOString()}.`,
+    `Built from ${events.length} ${input.sourceLabel || 'Splunk'} event(s) between ${new Date(t0Ms - windowHours * HOUR_MS).toISOString()} and ${new Date(t0Ms).toISOString()}.`,
     baselineAvailable ? 'Baseline: compared against the user\'s earlier history.' : 'Baseline unavailable (no earlier history found): first-seen indicators are disabled.',
     `Not yet implemented: ${NOT_IMPLEMENTED_INDICATORS.join('; ')}.`,
   ];
@@ -396,7 +398,7 @@ export function buildProfile(input: BuildInput): UserProfile {
     edges: outEdges,
     milestones,
     contributingFactors: factors,
-    dataSource: 'splunk',
+    dataSource: input.dataSource || 'splunk',
     t0: new Date(t0Ms).toISOString(),
     windowHours,
     truncated,

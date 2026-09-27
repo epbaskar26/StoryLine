@@ -1,3 +1,12 @@
+# Changes in 0.5.0
+
+- New live data source: **Elasticsearch** (free Basic license). Set `DATA_SOURCE=elastic` and `ELASTIC_URL`. Reads Winlogbeat / ECS data: Windows Security logons, failures, process creation, group changes and file access; Sysmon process, network, file and DNS events; proxy-style web events. Falls back to raw `winlog.event_data.*` fields when Winlogbeat's ingest pipelines are not loaded.
+- `docker-compose.elastic.yml`: Elasticsearch and Kibana 8.19.13, single node, bound to localhost, passwords from `.env`.
+- `tools/winlogbeat/winlogbeat.yml` and `docs/ELASTIC_SETUP.md`: step-by-step Windows guide to ship your own laptop's event logs, with safe test activity (failed `runas` logons, harmless encoded PowerShell).
+- Data sources now sit behind one `LogSource` interface (`server/sources.ts`), so Splunk and Elastic share the same graph builder, risk scoring, baseline, 1-hop expansion, user search, query console and connection test.
+- Integrations: the live connector shows the configured source; the query console uses Lucene syntax for Elastic. Header badge shows **ELASTIC (LIVE)**.
+- `npm run mock:elastic`: a mock of the Elasticsearch search API with a planted attack for user `epbas`, relative to the current time.
+
 # Changes in 0.4.0
 
 - New default view: **Attack Path**, a linear, time-ordered view of the investigation. It starts at the user and the first login, then shows each step (entity reached) left to right, wrapping into rows like text. The cluster view is still available as **Relationship Graph**.

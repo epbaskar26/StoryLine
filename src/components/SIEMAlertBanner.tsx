@@ -13,6 +13,7 @@ interface Props {
 const SOURCE_LABEL: Record<string, { text: string; cls: string }> = {
   demo: { text: 'DEMO DATA', cls: 'bg-amber-500/20 text-amber-300 border-amber-500/40' },
   splunk: { text: 'SPLUNK (LIVE)', cls: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40' },
+  elastic: { text: 'ELASTIC (LIVE)', cls: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40' },
   snapshot: { text: 'CASE SNAPSHOT', cls: 'bg-sky-500/20 text-sky-300 border-sky-500/40' },
 };
 

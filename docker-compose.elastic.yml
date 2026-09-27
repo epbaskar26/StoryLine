@@ -1,0 +1,57 @@
+# Local Elasticsearch + Kibana (free Basic license) for WatchMe's live Windows data.
+# Start:  docker compose -f docker-compose.elastic.yml up -d
+# Passwords come from WatchMe's .env (ELASTIC_PASSWORD, KIBANA_PASSWORD). Ports are bound to localhost only.
+# Uses about 2-3 GB RAM. Winlogbeat on Windows must be the same version (ELASTIC_VERSION).
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:${ELASTIC_VERSION:-8.19.13}
+    environment:
+      - discovery.type=single-node
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD:-changeme}
+      - xpack.security.enabled=true
+      - xpack.security.http.ssl.enabled=false
+      - xpack.security.transport.ssl.enabled=false
+      - xpack.license.self_generated.type=basic
+      - ES_JAVA_OPTS=-Xms1g -Xmx1g
+    ports:
+      - "127.0.0.1:9200:9200"
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s -u elastic:$${ELASTIC_PASSWORD} http://localhost:9200/_cluster/health | grep -Eq '\"status\":\"(green|yellow)\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  # One-off job: sets the password Kibana uses to talk to Elasticsearch
+  kibana-setup:
+    image: docker.elastic.co/elasticsearch/elasticsearch:${ELASTIC_VERSION:-8.19.13}
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    environment:
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD:-changeme}
+      - KIBANA_PASSWORD=${KIBANA_PASSWORD:-kibanachangeme}
+    command:
+      - bash
+      - -c
+      - |
+        curl -s -X POST -u "elastic:$${ELASTIC_PASSWORD}" -H 'Content-Type: application/json' \
+          http://elasticsearch:9200/_security/user/kibana_system/_password \
+          -d "{\"password\":\"$${KIBANA_PASSWORD}\"}" && echo " kibana_system password set"
+    restart: "no"
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:${ELASTIC_VERSION:-8.19.13}
+    depends_on:
+      kibana-setup:
+        condition: service_completed_successfully
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - ELASTICSEARCH_USERNAME=kibana_system
+      - ELASTICSEARCH_PASSWORD=${KIBANA_PASSWORD:-kibanachangeme}
+    ports:
+      - "127.0.0.1:5601:5601"
+
+volumes:
+  es-data: {}
