@@ -1,0 +1,42 @@
+# Winlogbeat config for a WatchMe lab VM (VirtualBox, host-only network). See docs/LAB_SETUP.md.
+# Copy this file over the winlogbeat.yml in your Winlogbeat folder, set the password, then follow docs/ELASTIC_SETUP.md.
+
+winlogbeat.event_logs:
+  # Logons (4624/4625), group changes (4732...), process creation (4688, if enabled). Backfill 30 days for the baseline.
+  - name: Security
+    ignore_older: 720h
+  # Process starts, network connections, file creation, DNS (install Sysmon first; skipped if absent)
+  - name: Microsoft-Windows-Sysmon/Operational
+    ignore_older: 720h
+  # PowerShell script blocks
+  - name: Microsoft-Windows-PowerShell/Operational
+    event_id: 4103, 4104, 4105, 4106
+    ignore_older: 168h
+
+# ---------------- Output ----------------
+output.elasticsearch:
+  hosts: ["http://192.168.56.1:9200"]   # the host PC's VirtualBox host-only address
+  username: "elastic"
+  password: "changeme"        # same as ELASTIC_PASSWORD in WatchMe's .env
+  # Routes Security/Sysmon/PowerShell events through Winlogbeat's ingest pipelines (ECS field mapping)
+  pipeline: "winlogbeat-%{[agent.version]}-routing"
+
+# Kibana, for loading Winlogbeat's dashboards (optional)
+setup.kibana:
+  host: "http://192.168.56.1:5601"
+
+setup.template.settings:
+  index.number_of_shards: 1
+  index.number_of_replicas: 0   # single-node lab: no replicas, so the index stays green
+
+# Add host metadata (host.name, host.os...) to every event
+processors:
+  - add_host_metadata:
+      when.not.contains.tags: forwarded
+
+logging.level: info
+logging.to_files: true
+logging.files:
+  path: C:\ProgramData\winlogbeat\logs
+  name: winlogbeat
+  keepfiles: 7

@@ -14,7 +14,8 @@ services:
       - xpack.license.self_generated.type=basic
       - ES_JAVA_OPTS=-Xms1g -Xmx1g
     ports:
-      - "127.0.0.1:9200:9200"
+      # ELASTIC_BIND: 127.0.0.1 (default, this PC only) or the VirtualBox host-only address (e.g. 192.168.56.1) for a lab VM
+      - "${ELASTIC_BIND:-127.0.0.1}:9200:9200"
     volumes:
       - es-data:/usr/share/elasticsearch/data
     healthcheck:
