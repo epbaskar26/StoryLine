@@ -1,0 +1,52 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    --font-mono: 'JetBrains Mono', monospace;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+}
+
+/* Polished dot grid canvas background matching Vocalyn UI */
+.flow-canvas-grid-light {
+  background-color: #FAFAFA;
+  background-image: radial-gradient(#D4D4D8 1.1px, transparent 1.1px);
+  background-size: 20px 20px;
+}
+
+.flow-canvas-grid-dark {
+  background-color: #090D16;
+  background-image: radial-gradient(#27272A 1.1px, transparent 1.1px);
+  background-size: 20px 20px;
+}
+
+/* Refined crisp box shadows matching modern SaaS cards */
+.vocalyn-card-shadow {
+  box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.04), 0 1px 2px -1px rgba(0, 0, 0, 0.02);
+}
+
+.vocalyn-elevated-shadow {
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.05), 0 8px 10px -6px rgba(0, 0, 0, 0.03);
+}
+
+/* Custom scrollbars */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #E4E4E7;
+  border-radius: 4px;
+}
+.dark ::-webkit-scrollbar-thumb {
+  background: #27272A;
+}

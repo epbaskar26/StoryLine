@@ -1,0 +1,6 @@
+{
+  "name": "WatchMe - Risky User & Entity Behavior Analytics",
+  "description": "Transforms raw security logs into an interactive 48-hour chronological map of user activity with lateral movement visualization, time scrubber replay, client-side video evidence export, and privacy-preserving AI case summaries.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
