@@ -1,3 +1,9 @@
+# Changes in 0.7.5
+
+- **Fix: on a busy real workstation the event budget filled with OS/UI noise, so older activity was trimmed and 2-day vs 7-day looked the same.** WatchMe now drops high-volume benign process noise at query time (conhost, RuntimeBroker, msedgewebview2, backgroundTaskHost, search/telemetry helpers, etc.), so the cap and the graph focus on meaningful activity and the window covers its full span. Attacker-relevant binaries (svchost, rundll32, powershell, cmd, wscript, mshta, sc, schtasks...) are always kept. Toggle with `ELASTIC_DENOISE=false`; add your own names with `ELASTIC_EXCLUDE_PROCS=docker.exe,node.exe`.
+- The Elastic event cap default is raised to 50,000 (from 20,000).
+- **Fix: the Live button could spin without updating.** Live now skips a refresh if the previous one is still running, so slow queries no longer leave it stuck.
+
 # Changes in 0.7.4
 
 - **Fix: a wide window showed fewer events than a narrow one, and recent activity (e.g. the encoded PowerShell you just ran) was missing.** The Elastic reader fetched events oldest-first and capped at ELASTIC_MAX_EVENTS, so a busy 7-day window kept the oldest 20,000 and dropped the newest. It now fetches newest-first, so the most recent events are always kept (the "returned the maximum" note still tells you when older activity was trimmed).

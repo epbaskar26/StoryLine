@@ -115,6 +115,7 @@ export default function App() {
   const profileRef = useRef<UserProfile | null>(null);
   profileRef.current = userProfile;
   const loadedSourceKeyRef = useRef<string>('');
+  const loadingRef = useRef(false);
 
   const entityKey = graphSource.kind === 'live' ? graphSource.key : userProfile?.username || '';
   const windowHours = userProfile?.windowHours ?? (graphSource.kind !== 'case' ? graphSource.windowHours : 48);
@@ -161,6 +162,7 @@ export default function App() {
     let cancelled = false;
     const started = performance.now();
     const refreshOfSame = loadedSourceKeyRef.current === key && !!profileRef.current;
+    loadingRef.current = true;
     setLoading(true);
     setLoadError(null);
 
@@ -223,6 +225,7 @@ export default function App() {
         if (!cancelled) setLoadError(err.message || String(err));
       })
       .finally(() => {
+        loadingRef.current = false;
         if (!cancelled) setLoading(false);
       });
     return () => { cancelled = true; };
@@ -233,6 +236,7 @@ export default function App() {
   useEffect(() => {
     if (!isLive) return;
     const t = window.setInterval(() => {
+      if (loadingRef.current) return; // a refresh is still in flight; skip this tick
       setGraphSource(prev => (prev.kind !== 'case' && prev.live ? { ...prev, nonce: prev.nonce + 1 } : prev));
     }, LIVE_REFRESH_MS);
     return () => window.clearInterval(t);

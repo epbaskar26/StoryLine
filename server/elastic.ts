@@ -13,6 +13,7 @@ export interface ElasticConfig {
   index: string; // index pattern(s), e.g. winlogbeat-*
   timeoutMs: number;
   maxEvents: number;
+  excludeProcs: string[]; // benign high-volume process names to drop at query time (denoise)
 }
 
 export function loadElasticConfig(env = process.env): ElasticConfig | null {
@@ -27,8 +28,29 @@ export function loadElasticConfig(env = process.env): ElasticConfig | null {
     verifyTls: env.ELASTIC_VERIFY_TLS !== 'false',
     index,
     timeoutMs: parseInt(env.ELASTIC_TIMEOUT_MS || '60000', 10),
-    maxEvents: parseInt(env.ELASTIC_MAX_EVENTS || '20000', 10),
+    maxEvents: parseInt(env.ELASTIC_MAX_EVENTS || '50000', 10),
+    // Denoise on by default: drop OS/UI process-creation spam so the event budget and graph focus on
+    // meaningful activity. ELASTIC_DENOISE=false disables it; ELASTIC_EXCLUDE_PROCS adds names (comma-sep).
+    excludeProcs: env.ELASTIC_DENOISE === 'false' ? [] : DEFAULT_NOISE_PROCS.concat((env.ELASTIC_EXCLUDE_PROCS || '').split(',').map(x => x.trim().toLowerCase()).filter(Boolean)),
   };
+}
+
+// High-volume, benign Windows/OS process names. These are console/UI/search/telemetry helpers that a real
+// workstation spawns constantly. Deliberately NOT here: svchost, rundll32, regsvr32, mshta, wscript, cscript,
+// powershell, cmd, wmic, net, sc, schtasks — all attacker-relevant and kept.
+const DEFAULT_NOISE_PROCS = [
+  'conhost.exe', 'runtimebroker.exe', 'backgroundtaskhost.exe', 'searchprotocolhost.exe', 'searchfilterhost.exe',
+  'searchindexer.exe', 'taskhostw.exe', 'sihost.exe', 'ctfmon.exe', 'dwm.exe', 'fontdrvhost.exe', 'audiodg.exe',
+  'smartscreen.exe', 'startmenuexperiencehost.exe', 'shellexperiencehost.exe', 'textinputhost.exe',
+  'applicationframehost.exe', 'systemsettings.exe', 'useroobebroker.exe', 'wmiprvse.exe', 'mousocoreworker.exe',
+  'locationnotificationwindows.exe', 'msedgewebview2.exe', 'widgets.exe', 'widgetservice.exe', 'phoneexperiencehost.exe',
+  'securityhealthservice.exe', 'securityhealthsystray.exe', 'gamebar.exe', 'gamebarftserver.exe', 'crashpad_handler.exe',
+];
+
+// Drop process-creation events for the noise list. Non-process events (no process.name) are never affected.
+function denoiseClause(cfg: ElasticConfig) {
+  if (!cfg.excludeProcs.length) return [];
+  return [{ bool: { must_not: [{ terms: { 'process.name': cfg.excludeProcs } }] } }];
 }
 
 function request(cfg: ElasticConfig, method: string, path: string, body?: unknown): Promise<any> {
@@ -130,7 +152,7 @@ async function searchAll(cfg: ElasticConfig, query: unknown, limit: number): Pro
 }
 
 export async function fetchUserEvents(cfg: ElasticConfig, username: string, fromMs: number, toMs: number): Promise<{ events: NormalizedEvent[]; rawCount: number }> {
-  const hits = await searchAll(cfg, { bool: { filter: [range(fromMs, toMs), userClause(username)] } }, cfg.maxEvents);
+  const hits = await searchAll(cfg, { bool: { filter: [range(fromMs, toMs), userClause(username), ...denoiseClause(cfg)] } }, cfg.maxEvents);
   return { events: normalizeEcsHits(hits), rawCount: hits.length };
 }
 
@@ -164,7 +186,7 @@ export async function fetchHostEvents(cfg: ElasticConfig, hosts: string[], fromM
     bool: { should: [
       { terms: { 'host.name': safe } }, { terms: { 'winlog.computer_name': safe.map(h => h.toUpperCase()) } }, { terms: { 'host.hostname': safe } },
     ], minimum_should_match: 1 },
-  }, { terms: { 'event.code': HOST_EVENT_CODES } }] } };
+  }, { terms: { 'event.code': HOST_EVENT_CODES } }, ...denoiseClause(cfg)] } };
   return normalizeEcsHits(await searchAll(cfg, query, limit));
 }
 

@@ -95,9 +95,10 @@ function matches(d, q) {
   if (!q) return true;
   if (q.bool) {
     const f = (q.bool.filter || []).every(c => matches(d, c)) && (q.bool.must || []).every(c => matches(d, c));
+    const mn = (q.bool.must_not || []).every(c => !matches(d, c));
     const sh = q.bool.should || [];
     const need = q.bool.minimum_should_match ?? (sh.length && !q.bool.filter && !q.bool.must ? 1 : 0);
-    return f && sh.filter(c => matches(d, c)).length >= need;
+    return f && mn && sh.filter(c => matches(d, c)).length >= need;
   }
   if (q.range) {
     const [field, r] = Object.entries(q.range)[0];
