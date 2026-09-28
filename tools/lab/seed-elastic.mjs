@@ -17,9 +17,13 @@ const flag = name => args.includes(`--${name}`);
 const URL = opt('url', process.env.ELASTIC_URL || 'http://localhost:9200').replace(/\/+$/, '');
 const USER = opt('user', process.env.ELASTIC_USERNAME || 'elastic');
 const PASS = opt('pass', process.env.ELASTIC_PASSWORD || 'changeme');
-const INDEX = opt('index', 'watchme-demo');
+// By default the seeder writes into your existing winlogbeat-* data (marked labels.seeded), so both real
+// and fictional identities query from the same URL with no .env change. --index forces a separate index.
+const INDEX = opt('index', '');
+const SEED_TAG = 'watchme-demo';
 const DRY = flag('dry');
 const RESET = flag('reset');
+const CLEANUP = flag('cleanup');
 
 const NOW = Date.now();
 const H = 3600_000;
@@ -156,27 +160,64 @@ async function es(method, path, body, ndjson = false) {
   return { ok: res.ok, status: res.status, text };
 }
 
+// Find the winlogbeat data stream so we can write into the same place Winlogbeat does.
+async function findWinlogbeatStream() {
+  const r = await es('GET', '/_data_stream/winlogbeat-*');
+  if (!r.ok) return null;
+  try { const ds = JSON.parse(r.text).data_streams || []; return ds.length ? ds[0].name : null; } catch { return null; }
+}
+
 (async () => {
-  // Reachability / auth check
   const ping = await es('GET', '/');
   if (!ping.ok) { console.error(`Cannot reach Elasticsearch at ${URL} (HTTP ${ping.status}). Check the URL and elastic password.\n${ping.text.slice(0, 200)}`); process.exit(1); }
   console.log(`Connected to Elasticsearch at ${URL}`);
 
-  if (RESET) { await es('DELETE', `/${INDEX}`); console.log(`Deleted index ${INDEX} (if it existed).`); }
+  // Cleanup mode: remove everything this seeder added, wherever it went.
+  if (CLEANUP) {
+    const del = await es('POST', '/winlogbeat-*,watchme-demo/_delete_by_query?refresh=true&ignore_unavailable=true', JSON.stringify({ query: { term: { 'labels.seeded': SEED_TAG } } }));
+    let n = 0; try { n = JSON.parse(del.text).deleted || 0; } catch {}
+    console.log(`Removed ${n} seeded document(s).`);
+    await es('DELETE', '/watchme-demo'); // the separate-index fallback, if it was used
+    console.log('Done.'); return;
+  }
 
-  // Bulk index. Each doc: an action line then the source line.
-  const body = docs.map(d => `${JSON.stringify({ index: { _index: INDEX, _id: d._id } })}\n${JSON.stringify(d._source)}`).join('\n') + '\n';
+  // Where to write: the existing winlogbeat data stream by default (no .env change needed),
+  // or a separate index if --index was given.
+  let target = INDEX;
+  let isStream = false;
+  if (!target) {
+    const stream = await findWinlogbeatStream();
+    if (stream) { target = stream; isStream = true; console.log(`Writing into the existing Winlogbeat data stream "${stream}" (tagged labels.seeded=${SEED_TAG}).`); }
+    else { target = 'watchme-demo'; console.log('No winlogbeat data stream found; using a separate index "watchme-demo".'); }
+  }
+
+  if (RESET && !isStream) { await es('DELETE', `/${target}`); console.log(`Deleted index ${target} (if it existed).`); }
+  if (RESET && isStream) {
+    const del = await es('POST', `/${target}/_delete_by_query?refresh=true`, JSON.stringify({ query: { term: { 'labels.seeded': SEED_TAG } } }));
+    let n = 0; try { n = JSON.parse(del.text).deleted || 0; } catch {}
+    console.log(`Removed ${n} previously seeded document(s) from the stream.`);
+  }
+
+  // Tag every doc so it can be found and removed later.
+  for (const d of docs) d._source.labels = { ...(d._source.labels || {}), seeded: SEED_TAG };
+
+  // Data streams require the "create" op and do not accept a custom _id; a normal index uses "index".
+  const action = isStream ? d => JSON.stringify({ create: { _index: target } }) : d => JSON.stringify({ index: { _index: target, _id: d._id } });
+  const body = docs.map(d => `${action(d)}\n${JSON.stringify(d._source)}`).join('\n') + '\n';
   const r = await es('POST', '/_bulk?refresh=wait_for', body, true);
   if (!r.ok) { console.error(`Bulk index failed (HTTP ${r.status}):\n${r.text.slice(0, 400)}`); process.exit(1); }
   const parsed = JSON.parse(r.text);
-  const errors = (parsed.items || []).filter(i => i.index && i.index.error);
-  console.log(`Indexed ${docs.length - errors.length}/${docs.length} documents into "${INDEX}".`);
-  if (errors.length) console.error(`  ${errors.length} failed. First error: ${JSON.stringify(errors[0].index.error).slice(0, 200)}`);
+  const errors = (parsed.items || []).filter(i => (i.index || i.create).error);
+  console.log(`Indexed ${docs.length - errors.length}/${docs.length} documents.`);
+  if (errors.length) console.error(`  ${errors.length} failed. First error: ${JSON.stringify((errors[0].index || errors[0].create).error).slice(0, 200)}`);
 
   console.log('\nNext:');
-  console.log(`  1. Point WatchMe at this index. In .env:   ELASTIC_INDEX=winlogbeat-*,${INDEX}`);
-  console.log('  2. Restart:  npm run dev');
-  console.log('  3. Open:  http://127.0.0.1:3000/?entity=jsmith   (also try aturner, or Ctrl+K host.name:"srv-hr-db01")');
-  console.log(`\nKibana: create a data view for "${INDEX}" to browse the raw events.`);
-  console.log(`Remove later:  curl -u ${USER}:*** -X DELETE ${URL}/${INDEX}`);
+  if (isStream) {
+    console.log('  No .env change needed - the data is in your winlogbeat-* stream. Just refresh WatchMe.');
+  } else {
+    console.log(`  Add the index in .env:   ELASTIC_INDEX=winlogbeat-*,${target}   then restart npm run dev`);
+  }
+  console.log('  In WatchMe, open  http://127.0.0.1:3000/?entity=jsmith   (also aturner, or Ctrl+K host.name:"srv-hr-db01").');
+  console.log('  Re-query (or Live) picks up the seeded data alongside your real epbas events.');
+  console.log(`\nRemove later:  node tools/lab/seed-elastic.mjs --cleanup`);
 })();

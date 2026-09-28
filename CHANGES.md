@@ -1,3 +1,8 @@
+# Changes in 0.7.3
+
+- **Fix: recent events did not appear; Re-query and Edit window seemed frozen.** The window used to pin its end time at the first load, so activity that arrived afterwards fell outside it and Re-query kept rebuilding the same past window. Now the window ends at "now" by default and stays static only until you act: **Re-query** refetches up to the current moment (new events appear), **Live** follows every 30 s, and **Edit window** with a custom start/end sets a FIXED historical window. The badge shows STATIC (ends now), LIVE, or FIXED.
+- **Seeder writes into your existing Elasticsearch by default.** `node tools/lab/seed-elastic.mjs` now detects the Winlogbeat data stream and indexes the fictional logs into it (tagged `labels.seeded=watchme-demo`), so real (epbas) and fictional (jsmith, aturner) identities are queryable from the same URL with no `.env` change. `--index <name>` forces a separate index instead; `--cleanup` removes everything the seeder added; `--reset` re-seeds.
+
 # Changes in 0.7.2
 
 - **Dummy log seeder** `tools/lab/seed-elastic.mjs` (`npm run seed:elastic`): bulk-loads ~54 realistic Winlogbeat/ECS documents into your real Elasticsearch, timestamped relative to now, covering a full kill chain plus install, service, scheduled task, registry, LSASS, Defender, lockout, audit-clear and cloud sign-in events, across two users and several hosts. WatchMe and Kibana both read them. `--reset`, `--dry`, `--index` supported.

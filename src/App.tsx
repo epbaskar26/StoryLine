@@ -115,7 +115,6 @@ export default function App() {
   const profileRef = useRef<UserProfile | null>(null);
   profileRef.current = userProfile;
   const loadedSourceKeyRef = useRef<string>('');
-  const skipLoadRef = useRef<string | null>(null); // freezing t0 after a load must not trigger another load
 
   const entityKey = graphSource.kind === 'live' ? graphSource.key : userProfile?.username || '';
   const windowHours = userProfile?.windowHours ?? (graphSource.kind !== 'case' ? graphSource.windowHours : 48);
@@ -159,8 +158,6 @@ export default function App() {
   // Load the graph (entity, log search, or saved case snapshot)
   useEffect(() => {
     const key = sourceKey(graphSource);
-    const stateKey = JSON.stringify(graphSource);
-    if (skipLoadRef.current === stateKey) { skipLoadRef.current = null; return; }
     let cancelled = false;
     const started = performance.now();
     const refreshOfSame = loadedSourceKeyRef.current === key && !!profileRef.current;
@@ -218,12 +215,9 @@ export default function App() {
         setInvestigationKey(invKey);
         setTimeToContextMs(Math.round(performance.now() - started));
         setLastRefreshMs(Date.now());
-        // Freeze the window: "now" becomes a fixed end time, so re-queries and expansions use the same window
-        if (graphSource.kind !== 'case' && !graphSource.live && !graphSource.t0 && profile.t0) {
-          const frozen = { ...graphSource, t0: profile.t0 };
-          skipLoadRef.current = JSON.stringify(frozen);
-          setGraphSource(frozen);
-        }
+        // The built window (end = profile.t0) is what expansions and the window bar use. The graph is
+        // static until the analyst acts (Re-query, Edit window, Live), so nodes never drop on their own;
+        // an empty graphSource.t0 means "end at now", so Re-query always fetches up to the current moment.
       })
       .catch(err => {
         if (!cancelled) setLoadError(err.message || String(err));
@@ -276,6 +270,8 @@ export default function App() {
     setInvestigationView('path');
   };
 
+  // Re-query: refetch. In "now" mode (no pinned t0) this advances the end to the current moment so new
+  // events appear; with a pinned historical window it re-runs the same window.
   const reloadGraph = () => {
     setGraphSource(prev => (prev.kind !== 'case' ? { ...prev, nonce: prev.nonce + 1 } : prev));
   };
@@ -287,8 +283,8 @@ export default function App() {
   const toggleLive = () => {
     setGraphSource(prev => {
       if (prev.kind === 'case') return prev;
-      if (prev.live) return { ...prev, live: false, t0: profileRef.current?.t0 || new Date().toISOString() };
-      return { ...prev, live: true, t0: '', nonce: prev.nonce + 1 };
+      // Live follows "now"; stopping live leaves the window at "now" but static (Re-query to refresh)
+      return { ...prev, live: !prev.live, t0: '', nonce: prev.nonce + 1 };
     });
   };
 
@@ -692,6 +688,7 @@ export default function App() {
         windowHours={windowHours}
         isLive={isLive}
         isSnapshot={graphSource.kind === 'case'}
+        pinnedEnd={graphSource.kind !== 'case' && !!graphSource.t0}
         lastRefreshMs={lastRefreshMs}
         loading={loading}
         searchQuery={searchQuery}

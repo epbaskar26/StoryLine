@@ -9,6 +9,7 @@ interface Props {
   windowHours: number;
   isLive: boolean;
   isSnapshot: boolean;
+  pinnedEnd: boolean; // true = a fixed historical end time was chosen; false = ends at "now" (Re-query refreshes)
   lastRefreshMs: number | null;
   loading: boolean;
   searchQuery?: string;
@@ -24,7 +25,7 @@ interface Props {
 const MAX_HOURS = 168;
 
 export const WindowBar: React.FC<Props> = ({
-  windowStart, windowEnd, windowHours, isLive, isSnapshot, lastRefreshMs, loading, searchQuery, demoMode, caseRecord,
+  windowStart, windowEnd, windowHours, isLive, isSnapshot, pinnedEnd, lastRefreshMs, loading, searchQuery, demoMode, caseRecord,
   onApply, onRequery, onToggleLive, onAssignClose, onExitSearch,
 }) => {
   const [editing, setEditing] = useState(false);
@@ -62,7 +63,8 @@ export const WindowBar: React.FC<Props> = ({
     apply(new Date(e).toISOString(), hours);
   };
 
-  const preset = (hours: number) => apply(new Date().toISOString(), hours);
+  // "Last N" presets end at now (Re-query then follows the current moment); a custom start/end is fixed.
+  const preset = (hours: number) => apply('', hours);
   const statusChip = caseRecord && (
     <span data-testid="case-chip" className={`px-2 py-0.5 rounded border text-[11px] font-mono ${caseRecord.status === 'CLOSED' ? 'border-emerald-500/40 text-emerald-400 bg-emerald-500/10' : 'border-sky-500/40 text-sky-300 bg-sky-500/10'}`}>
       {caseRecord.caseRef} · {caseRecord.status}{caseRecord.assignee ? ` · ${caseRecord.assignee}` : ''}
@@ -89,9 +91,13 @@ export const WindowBar: React.FC<Props> = ({
         <span data-testid="live-badge" className="flex items-center gap-1 px-1.5 py-0.5 rounded border border-red-500/50 text-red-400 text-[10px] font-bold">
           <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" /> LIVE{lastRefreshMs ? ` · updated ${fmtAgo(lastRefreshMs)}` : ''}
         </span>
+      ) : pinnedEnd ? (
+        <span data-testid="fixed-badge" className="flex items-center gap-1 px-1.5 py-0.5 rounded border border-slate-700 text-slate-300 text-[10px] font-semibold" title="A fixed historical window. Re-query re-runs this exact window; use Edit window to change it, or Live to follow now.">
+          <Snowflake className="w-3 h-3" /> FIXED
+        </span>
       ) : (
-        <span data-testid="frozen-badge" className="flex items-center gap-1 px-1.5 py-0.5 rounded border border-slate-700 text-slate-300 text-[10px] font-semibold" title="The window is fixed: nodes do not drop out as time passes. Re-query refreshes the same window.">
-          <Snowflake className="w-3 h-3" /> FROZEN
+        <span data-testid="now-badge" className="flex items-center gap-1 px-1.5 py-0.5 rounded border border-slate-700 text-slate-300 text-[10px] font-semibold" title="The window ends at your last query and does not move on its own. Re-query refreshes it to the current moment; Live follows automatically.">
+          <Snowflake className="w-3 h-3" /> STATIC · ends {lastRefreshMs ? fmtAgo(lastRefreshMs) : 'now'}
         </span>
       )}
 
