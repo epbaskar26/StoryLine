@@ -34,6 +34,7 @@ interface Props {
   onCancelRecording: () => void;
   onRegisterEvidence: (video: RecordedVideo) => void;
   onPushToTicket?: (system: 'jira' | 'slack' | 'servicenow') => void;
+  onSnapshot?: () => void;
 }
 
 const formatBytes = (n: number) => (n > 1048576 ? `${(n / 1048576).toFixed(2)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
@@ -52,6 +53,7 @@ export const ReplayVideoStudio: React.FC<Props> = ({
   onCancelRecording,
   onRegisterEvidence,
   onPushToTicket,
+  onSnapshot,
 }) => {
   const [copiedHash, setCopiedHash] = useState(false);
   const formatLabel = !recordingMime ? 'Unsupported' : recordingMime.includes('mp4') ? 'MP4 (H.264)' : 'WebM';
@@ -65,6 +67,10 @@ export const ReplayVideoStudio: React.FC<Props> = ({
   };
 
   const handleTakeSnapshot = () => {
+    // The live canvas only exists on the Investigation (path/graph) view; on the
+    // Replay tab it is unmounted. Delegate to the parent, which switches to that
+    // view and captures the mounted canvas.
+    if (onSnapshot) { onSnapshot(); return; }
     if (!canvasElement || !canvasElement.isConnected) return;
     try {
       const link = document.createElement('a');
@@ -93,9 +99,8 @@ export const ReplayVideoStudio: React.FC<Props> = ({
         <div className="flex items-center gap-3">
           <button
             onClick={handleTakeSnapshot}
-            disabled={!canvasElement?.isConnected}
-            title={canvasElement?.isConnected ? 'Download the current graph as PNG' : 'Open the Investigation tab first'}
-            className="flex items-center gap-2 px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg text-xs font-semibold transition-colors disabled:opacity-40"
+            title="Switch to the graph and download it as a PNG"
+            className="flex items-center gap-2 px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg text-xs font-semibold transition-colors"
           >
             <Camera className="w-4 h-4 text-cyan-400" />
             <span>Snapshot PNG</span>

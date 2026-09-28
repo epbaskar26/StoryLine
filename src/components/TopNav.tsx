@@ -13,7 +13,8 @@ import {
   Search,
   Sparkles,
   Command,
-  ChevronDown
+  ChevronDown,
+  LogOut
 } from 'lucide-react';
 import { ViewTab, UserProfile, EntitySummary } from '../types';
 
@@ -29,6 +30,7 @@ interface Props {
   isDarkMode: boolean;
   onToggleDarkMode: () => void;
   onOpenGlobalSearch?: () => void;
+  onSignOut?: () => void;
 }
 
 export const TopNav: React.FC<Props> = ({
@@ -42,7 +44,8 @@ export const TopNav: React.FC<Props> = ({
   isRecording = false,
   isDarkMode,
   onToggleDarkMode,
-  onOpenGlobalSearch
+  onOpenGlobalSearch,
+  onSignOut
 }) => {
   return (
     <header className="w-full bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-6 py-2.5 flex items-center justify-between select-none z-30 transition-colors">
@@ -50,14 +53,10 @@ export const TopNav: React.FC<Props> = ({
       <div className="flex items-center gap-6">
         {/* Brand Logo */}
         <div className="flex items-center gap-2.5 cursor-pointer" onClick={() => onChangeTab('watchlist')}>
-          <div className="w-8 h-8 rounded-lg bg-cyan-600 flex items-center justify-center text-white font-bold text-base shadow-sm">
-            <Shield className="w-4 h-4 fill-current" />
-          </div>
-          <div>
-            <span className="text-base font-extrabold tracking-tight text-slate-900 dark:text-slate-100 font-sans">
-              WatchMe
-            </span>
-          </div>
+          <img src="/storyline-mark.png" alt="StoryLine" className="h-8 w-auto rounded-md bg-white p-1 shadow-sm" />
+          <span className="text-base font-extrabold tracking-tight text-slate-900 dark:text-slate-100 font-sans">
+            StoryLine
+          </span>
         </div>
 
         {/* Global Search Pill matching Vocalyn Ctrl+K prompt */}
@@ -193,6 +192,17 @@ export const TopNav: React.FC<Props> = ({
           <Video className="w-3.5 h-3.5" />
           <span>{isRecording ? 'Recording...' : 'Generate Replay'}</span>
         </button>
+
+        {onSignOut && (
+          <button
+            data-testid="sign-out"
+            onClick={onSignOut}
+            title="Sign out (demo)"
+            className="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-900 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-800 transition-colors"
+          >
+            <LogOut className="w-4 h-4" />
+          </button>
+        )}
       </div>
     </header>
   );

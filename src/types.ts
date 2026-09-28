@@ -287,7 +287,7 @@ export interface SystemStatus {
   queryLanguage: string | null; // e.g. "SPL" or "Lucene"
   storage: 'postgres' | 'memory';
   aiConfigured: boolean;
-  aiProvider: 'gemini' | 'ollama' | 'none';
+  aiProvider: 'gemini' | 'ollama' | 'claude' | 'none';
   aiModel: string | null;
   analyst: string;
   lastGraphBuildMs: number | null;

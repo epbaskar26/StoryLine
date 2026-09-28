@@ -42,6 +42,50 @@ const HOUR_MS = 3_600_000;
 
 const app = express();
 app.disable('x-powered-by');
+
+// ----------------- Security middleware -----------------
+// WatchMe has no user login by design (local, single-analyst tool). These guards make that
+// posture safe against the browser-based attacks that reach a localhost server anyway:
+// DNS-rebinding and cross-site (CSRF) requests. See docs/SECURITY_REVIEW.md.
+//
+// Host allow-list: the Host header must resolve to this machine, or be explicitly permitted via
+// ALLOWED_HOSTS (comma-separated host[:port]). This blocks DNS-rebinding, where a malicious page
+// points its own hostname at 127.0.0.1 to talk to WatchMe from the browser.
+const ALLOWED_HOSTS = new Set(
+  (process.env.ALLOWED_HOSTS || '')
+    .split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
+);
+function hostIsAllowed(hostHeader: string): boolean {
+  const host = (hostHeader || '').toLowerCase();
+  const name = host.replace(/:\d+$/, ''); // strip :port
+  if (name === 'localhost' || name === '127.0.0.1' || name === '::1' || name === '[::1]') return true;
+  if (ALLOWED_HOSTS.has(host) || ALLOWED_HOSTS.has(name)) return true;
+  // When bound to a specific non-local interface, allow that address by default.
+  if (HOST !== '0.0.0.0' && HOST !== '::' && (name === HOST.toLowerCase())) return true;
+  return false;
+}
+// Same-origin guard for state-changing requests: if an Origin/Referer is present, its host must be
+// allowed too. Blocks a random website from POSTing to http://127.0.0.1:PORT/api/* in the analyst's
+// browser. (Requests with no Origin — e.g. curl, server-to-server — are unaffected.)
+function originIsAllowed(req: Request): boolean {
+  const origin = req.get('origin') || req.get('referer') || '';
+  if (!origin) return true;
+  try {
+    return hostIsAllowed(new URL(origin).host);
+  } catch {
+    return false;
+  }
+}
+app.use((req, res, next) => {
+  if (!hostIsAllowed(req.headers.host || '')) {
+    return res.status(403).json({ error: 'Forbidden: unrecognized Host header (possible DNS-rebinding). Set ALLOWED_HOSTS to permit it.' });
+  }
+  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method) && !originIsAllowed(req)) {
+    return res.status(403).json({ error: 'Forbidden: cross-origin request rejected.' });
+  }
+  next();
+});
+
 app.use(express.json({ limit: '5mb' }));
 
 let ai: AiProvider | null = null;
@@ -51,7 +95,8 @@ try {
   console.error(err.message);
   process.exit(1);
 }
-const aiLabel = () => (ai ? `${ai.kind === 'ollama' ? 'Ollama (local)' : 'Gemini'} ${ai.model}` : 'deterministic (no AI provider configured)');
+const AI_KIND_LABELS: Record<string, string> = { ollama: 'Ollama (local)', gemini: 'Gemini', claude: 'Claude' };
+const aiLabel = () => (ai ? `${AI_KIND_LABELS[ai.kind] || ai.kind} ${ai.model}` : 'deterministic (no AI provider configured)');
 
 const store = createStore();
 
@@ -62,6 +107,21 @@ class HttpError extends Error {
 
 const asyncRoute = (fn: (req: Request, res: Response) => Promise<unknown>) =>
   (req: Request, res: Response, next: NextFunction) => { fn(req, res).catch(next); };
+
+// Validate a client-supplied graph profile before the AI path does regex-heavy work over it.
+// Caps the node/edge counts so a crafted payload (within the 5 MB JSON limit) can't burn CPU.
+const MAX_PROFILE_NODES = 5000;
+const MAX_PROFILE_EDGES = 20000;
+function requireProfile(body: any): UserProfile {
+  const profile = body?.profile as UserProfile | undefined;
+  if (!profile || !Array.isArray(profile.nodes) || !Array.isArray(profile.edges)) {
+    throw new HttpError(400, 'profile with nodes and edges is required');
+  }
+  if (profile.nodes.length > MAX_PROFILE_NODES || profile.edges.length > MAX_PROFILE_EDGES) {
+    throw new HttpError(413, `profile too large (max ${MAX_PROFILE_NODES} nodes / ${MAX_PROFILE_EDGES} edges)`);
+  }
+  return profile;
+}
 
 const newId = (prefix: string) => `${prefix}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
 const sha256 = (s: string) => crypto.createHash('sha256').update(s).digest('hex');
@@ -1027,8 +1087,7 @@ Likely benign / suspicious / likely malicious, with the facts behind it.
 Numbered containment and validation steps.`;
 
 app.post('/api/gemini/case-summary', asyncRoute(async (req, res) => {
-  const profile = req.body.profile as UserProfile | undefined;
-  if (!profile || !Array.isArray(profile.nodes) || !Array.isArray(profile.edges)) throw new HttpError(400, 'profile with nodes and edges is required');
+  const profile = requireProfile(req.body);
   const privacyMode = req.body.privacyModeEnabled !== false;
   const ctx = tokenizeProfile(profile, privacyMode);
 
@@ -1076,8 +1135,7 @@ app.post('/api/ai/approve', asyncRoute(async (req, res) => {
 
 // AI Storyline (interpretation of the Attack Path; deterministic when no AI provider is configured)
 app.post('/api/ai/storyline', asyncRoute(async (req, res) => {
-  const profile = req.body.profile as UserProfile | undefined;
-  if (!profile || !Array.isArray(profile.nodes) || !Array.isArray(profile.edges)) throw new HttpError(400, 'profile with nodes and edges is required');
+  const profile = requireProfile(req.body);
   const privacyMode = req.body.privacyModeEnabled !== false;
   const { storyline, sentPayload } = await generateStoryline(profile, ai, privacyMode);
   await audit('GENERATE_AI_STORYLINE', profile.username, `${storyline.engine}; verdict ${storyline.verdict}; ${storyline.phases.length} phase(s); ${storyline.droppedSteps} uncited step(s) dropped${storyline.injectionWarnings.length ? `; ${storyline.injectionWarnings.length} injection warning(s)` : ''}`, storyline.sha256);
@@ -1091,7 +1149,9 @@ app.use('/api', (_req, res) => { res.status(404).json({ error: 'Not found' }); }
 app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
   const status = err instanceof HttpError ? err.status : 500;
   if (status >= 500) console.error(err);
-  res.status(status).json({ error: err.message || 'Internal error' });
+  // Only expose messages for intentional 4xx errors; 5xx get a generic message (details stay in the server log).
+  const message = status >= 500 ? 'Internal server error' : (err.message || 'Error');
+  res.status(status).json({ error: message });
 });
 
 // ----------------- Static assets & start -----------------

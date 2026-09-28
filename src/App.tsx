@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { Sparkles, Search, Network, Settings, FolderArchive, Video, AlertTriangle, Table2, Share2, Route, NotebookPen, Wand2 } from 'lucide-react';
+import { Sparkles, Search, Network, Settings, FolderArchive, Video, AlertTriangle, Table2, Share2, Route, NotebookPen, Wand2, Camera } from 'lucide-react';
 import { UserProfile, SecurityNode, ViewTab, WatchlistItem, CaseRecord, EntitySummary, SystemStatus, InvestigationNote, Storyline } from './types';
 import { TopNav } from './components/TopNav';
 import { SIEMAlertBanner } from './components/SIEMAlertBanner';
@@ -41,7 +41,7 @@ function pickRecordingMime(): string {
 
 const sourceKey = (g: GraphSource) => (g.kind === 'live' ? `e:${g.key}` : g.kind === 'search' ? `s:${g.query}` : `c:${g.caseId}`);
 
-export default function App() {
+export default function App({ onSignOut }: { onSignOut?: () => void } = {}) {
   const params = new URLSearchParams(window.location.search);
   const initialEntity = params.get('entity') || 'jsmith';
   const initialQuery = params.get('q');
@@ -294,6 +294,30 @@ export default function App() {
 
   const handleCanvasRef = useCallback((canvas: HTMLCanvasElement | null) => {
     canvasElementRef.current = canvas;
+  }, []);
+
+  // Snapshot the current graph as a PNG. The canvas only exists on the path/graph
+  // views, so switch to one first (if needed), let it paint, then capture.
+  const handleSnapshot = useCallback(() => {
+    setActiveTab('investigation');
+    setInvestigationView(v => (v === 'graph' ? 'graph' : 'path'));
+    window.setTimeout(() => {
+      const canvas = canvasElementRef.current;
+      if (!canvas || !canvas.isConnected) {
+        setNotice('Snapshot failed: open the Attack Path or Relationship Graph first.');
+        return;
+      }
+      try {
+        const uname = (profileRef.current?.username || 'graph').replace(/[^A-Za-z0-9._-]/g, '_');
+        const link = document.createElement('a');
+        link.download = `watchme_${uname}_graph.png`;
+        link.href = canvas.toDataURL('image/png');
+        link.click();
+        setNotice('Saved a PNG snapshot of the current graph.');
+      } catch (err: any) {
+        setNotice(`Snapshot failed: ${err?.message || err}`);
+      }
+    }, 300);
   }, []);
 
   // FR-06: 1-hop expansion
@@ -671,6 +695,7 @@ export default function App() {
         isDarkMode={isDarkMode}
         onToggleDarkMode={() => setIsDarkMode(prev => !prev)}
         onOpenGlobalSearch={() => setGlobalSearchOpen(true)}
+        onSignOut={onSignOut}
       />
 
       <SIEMAlertBanner
@@ -746,7 +771,17 @@ export default function App() {
                   Filtered to {nodeById.get(timelineNodeFilter)?.name || timelineNodeFilter} ✕
                 </button>
               )}
-              {loading && <span className="ml-auto text-[11px] font-mono text-slate-400">Refreshing...</span>}
+              {(investigationView === 'path' || investigationView === 'graph') && (
+                <button
+                  data-testid="snapshot-png"
+                  onClick={handleSnapshot}
+                  title="Download the current graph as a PNG"
+                  className="ml-auto flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-mono text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors"
+                >
+                  <Camera className="w-3.5 h-3.5" /> PNG
+                </button>
+              )}
+              {loading && <span className={`${(investigationView === 'path' || investigationView === 'graph') ? 'ml-2' : 'ml-auto'} text-[11px] font-mono text-slate-400`}>Refreshing...</span>}
             </div>
             <div className="flex-1 relative overflow-hidden">
               {investigationView === 'path' ? (
@@ -884,6 +919,7 @@ export default function App() {
             onCancelRecording={cancelRecording}
             onRegisterEvidence={registerEvidence}
             onPushToTicket={handlePushToTicket}
+            onSnapshot={handleSnapshot}
           />
         )}
 
