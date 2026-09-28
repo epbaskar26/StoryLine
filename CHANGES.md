@@ -1,3 +1,8 @@
+# Changes in 0.7.2
+
+- **Dummy log seeder** `tools/lab/seed-elastic.mjs` (`npm run seed:elastic`): bulk-loads ~54 realistic Winlogbeat/ECS documents into your real Elasticsearch, timestamped relative to now, covering a full kill chain plus install, service, scheduled task, registry, LSASS, Defender, lockout, audit-clear and cloud sign-in events, across two users and several hosts. WatchMe and Kibana both read them. `--reset`, `--dry`, `--index` supported.
+- **Fix:** the Elastic normalizer did not attach the account to install / uninstall / Defender / generic events, so they were missing from a user's graph (they only appeared in a host search). These now carry their user, so "Software installed", "Security product detection" and "Audit log cleared" fire in a normal user investigation. The same fallback was added to the Splunk normalizer.
+
 # Changes in 0.7.0
 
 ## Full activity coverage

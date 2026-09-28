@@ -260,6 +260,8 @@ export function normalizeRow(row: SplunkRow, index: number): NormalizedEvent | n
     ev.logName = sourcetype;
     ev.message = ev.message || pick(row, 'signature', 'Message', 'action') || (code ? `Event ${code} (${sourcetype})` : sourcetype);
   }
+  // Fallback account for install / Defender / generic rows that carry a user but no specific field
+  if (!ev.user) ev.user = bareUser(pick(row, 'user', 'User', 'Account_Name', 'SubjectUserName', 'TargetUserName'));
   return ev;
 }
 

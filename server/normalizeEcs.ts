@@ -217,6 +217,8 @@ export function normalizeEcsDoc(doc: EcsDoc, id: string): NormalizedEvent | null
       ev.message = str(doc, 'message', 'event.action') || (code ? `Event ${code} (${channel || module})` : dataset);
     }
   }
+  // Fallback: install / uninstall / Defender / generic branches may not carry an account; use the record's user
+  if (!ev.user) ev.user = bareUser(str(doc, 'user.name', 'winlog.event_data.SubjectUserName', 'related.user'));
   return ev;
 }
 

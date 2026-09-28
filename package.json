@@ -1,7 +1,7 @@
 {
   "name": "watchme",
   "private": true,
-  "version": "0.7.0",
+  "version": "0.7.2",
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
@@ -10,6 +10,7 @@
     "lint": "tsc --noEmit",
     "mock:splunk": "node tools/mock-splunk.mjs",
     "mock:elastic": "node tools/mock-elastic.mjs",
+    "seed:elastic": "node tools/lab/seed-elastic.mjs",
     "clean": "rm -rf dist"
   },
   "dependencies": {
