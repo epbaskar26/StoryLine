@@ -1,3 +1,7 @@
+# Changes in 0.7.4
+
+- **Fix: a wide window showed fewer events than a narrow one, and recent activity (e.g. the encoded PowerShell you just ran) was missing.** The Elastic reader fetched events oldest-first and capped at ELASTIC_MAX_EVENTS, so a busy 7-day window kept the oldest 20,000 and dropped the newest. It now fetches newest-first, so the most recent events are always kept (the "returned the maximum" note still tells you when older activity was trimmed).
+
 # Changes in 0.7.3
 
 - **Fix: recent events did not appear; Re-query and Edit window seemed frozen.** The window used to pin its end time at the first load, so activity that arrived afterwards fell outside it and Re-query kept rebuilding the same past window. Now the window ends at "now" by default and stays static only until you act: **Re-query** refetches up to the current moment (new events appear), **Live** follows every 30 s, and **Edit window** with a custom start/end sets a FIXED historical window. The badge shows STATIC (ends now), LIVE, or FIXED.

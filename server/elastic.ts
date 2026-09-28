@@ -105,7 +105,9 @@ function entityClause(entity: string) {
   };
 }
 
-// Page through results in time order (search_after), up to maxEvents
+// Page through results NEWEST first (search_after), up to maxEvents. Newest-first matters: on a busy
+// window that exceeds the cap we must keep the most recent events, not the oldest, or recent activity
+// (the reason you are investigating) is silently dropped. Results are returned oldest-first for the builder.
 async function searchAll(cfg: ElasticConfig, query: unknown, limit: number): Promise<{ _id: string; _source: EcsDoc }[]> {
   const out: { _id: string; _source: EcsDoc }[] = [];
   let after: unknown[] | undefined;
@@ -114,7 +116,7 @@ async function searchAll(cfg: ElasticConfig, query: unknown, limit: number): Pro
     const res = await request(cfg, 'POST', `${indexPath(cfg)}/_search?ignore_unavailable=true&allow_no_indices=true`, {
       size,
       query,
-      sort: [{ '@timestamp': 'asc' }, { _doc: 'asc' }],
+      sort: [{ '@timestamp': 'desc' }, { _doc: 'desc' }],
       track_total_hits: false,
       ...(after ? { search_after: after } : {}),
     });
@@ -123,6 +125,7 @@ async function searchAll(cfg: ElasticConfig, query: unknown, limit: number): Pro
     if (hits.length < size) break;
     after = hits[hits.length - 1].sort;
   }
+  out.reverse(); // hand back oldest-first
   return out;
 }
 
