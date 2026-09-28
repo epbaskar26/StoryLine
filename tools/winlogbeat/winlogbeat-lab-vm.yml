@@ -5,13 +5,27 @@ winlogbeat.event_logs:
   # Logons (4624/4625), group changes (4732...), process creation (4688, if enabled). Backfill 30 days for the baseline.
   - name: Security
     ignore_older: 720h
-  # Process starts, network connections, file creation, DNS (install Sysmon first; skipped if absent)
+  # Process starts, network, file, registry, DNS, LSASS access (install Sysmon first; skipped if absent)
   - name: Microsoft-Windows-Sysmon/Operational
     ignore_older: 720h
-  # PowerShell script blocks
+  # PowerShell script blocks (decoded commands)
   - name: Microsoft-Windows-PowerShell/Operational
-    event_id: 4103, 4104, 4105, 4106
+    event_id: 4103, 4104
     ignore_older: 168h
+  # System log: new service installs (7045), service control
+  - name: System
+    ignore_older: 720h
+  # Application log: software install / uninstall (MsiInstaller 11707/11708/11724, 1033/1034)
+  - name: Application
+    ignore_older: 720h
+  # Scheduled task creation (event 106 / 4698 is in the task log)
+  - name: Microsoft-Windows-TaskScheduler/Operational
+    event_id: 106, 140, 141
+    ignore_older: 720h
+  # Microsoft Defender detections (1116/1117 malware found / action taken)
+  - name: Microsoft-Windows-Windows Defender/Operational
+    event_id: 1006, 1007, 1015, 1116, 1117, 1118, 1119
+    ignore_older: 720h
 
 # ---------------- Output ----------------
 output.elasticsearch:

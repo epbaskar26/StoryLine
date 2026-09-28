@@ -4,6 +4,7 @@ import type { UserProfile, NodeType, CitationAudit } from '../src/types';
 
 const TOKEN_PREFIX: Record<NodeType, string> = {
   user: 'USER', host: 'HOST', ip: 'IP', application: 'APP', file: 'FILE', process: 'PROC', domain: 'DOMAIN', alert: 'ALERT', query: 'QUERY',
+  software: 'SOFTWARE', service: 'SERVICE', task: 'TASK', registry: 'REGISTRY', device: 'DEVICE', event: 'EVENT',
 };
 
 export interface TokenizedContext {

@@ -219,6 +219,18 @@ export async function runAdhocQuery(cfg: SplunkConfig, spl: string, earliest: nu
   return exportSearch(cfg, `${trimmed} | head ${limit}`, earliest, latest);
 }
 
+// Host-only events (service installs, scheduled tasks, Defender, registry, log-clear) with no user field,
+// so they show up when investigating a user who logged onto those hosts.
+const HOST_EVENT_CODES = ['7045', '4697', '4698', '1116', '1117', '1006', '1007', '1102', '104', '12', '13', '14'];
+export async function fetchHostEvents(cfg: SplunkConfig, hosts: string[], earliest: number, latest: number, limit = 3000): Promise<SplunkRow[]> {
+  const safe = hosts.filter(h => /^[A-Za-z0-9._-]{1,128}$/.test(h)).slice(0, 8);
+  if (!safe.length) return [];
+  const hostList = safe.map(h => splQuote(h)).join(', ');
+  const codes = HOST_EVENT_CODES.map(c => `EventCode=${c}`).join(' OR ');
+  const spl = `search ${indexClause(cfg.index)} (host IN (${hostList}) OR ComputerName IN (${hostList})) (${codes}) | fields ${EXPORT_FIELDS.join(', ')} | fields - _raw | head ${limit}`;
+  return exportSearch(cfg, spl, earliest, latest);
+}
+
 // Analyst SPL returning raw events (for building a graph from a manual search). Transforming searches
 // (stats, table...) have no events to graph, so only plain searches are accepted.
 export async function searchEvents(cfg: SplunkConfig, spl: string, earliest: number, latest: number, limit: number): Promise<SplunkRow[]> {

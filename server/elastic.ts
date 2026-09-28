@@ -152,6 +152,19 @@ export async function fetchBaseline(cfg: ElasticConfig, username: string, fromMs
   return out;
 }
 
+const HOST_EVENT_CODES = ['7045', '4697', '4698', '1116', '1117', '1006', '1007', '1102', '104', '12', '13', '14'];
+// Host-only events (no user field) on hosts the investigated user touched
+export async function fetchHostEvents(cfg: ElasticConfig, hosts: string[], fromMs: number, toMs: number, limit = 3000): Promise<NormalizedEvent[]> {
+  const safe = hosts.filter(h => h && h.length < 128).slice(0, 8);
+  if (!safe.length) return [];
+  const query = { bool: { filter: [range(fromMs, toMs), {
+    bool: { should: [
+      { terms: { 'host.name': safe } }, { terms: { 'winlog.computer_name': safe.map(h => h.toUpperCase()) } }, { terms: { 'host.hostname': safe } },
+    ], minimum_should_match: 1 },
+  }, { terms: { 'event.code': HOST_EVENT_CODES } }] } };
+  return normalizeEcsHits(await searchAll(cfg, query, limit));
+}
+
 // Analyst search (Lucene) returning normalized events, used to build a graph from a manual search
 export async function searchEvents(cfg: ElasticConfig, q: string, fromMs: number, toMs: number, limit: number): Promise<NormalizedEvent[]> {
   const query = q.trim()

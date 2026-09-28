@@ -49,6 +49,7 @@ interface NodeDraft {
 
 const PREFIX: Record<NodeType, string> = {
   user: 'u', host: 'host', ip: 'ip', application: 'app', file: 'file', process: 'proc', domain: 'dom', alert: 'alert', query: 'q',
+  software: 'sw', service: 'svc', task: 'task', registry: 'reg', device: 'dev', event: 'ev',
 };
 
 const MAX_EXECUTIONS_PER_PROCESS = 50;
@@ -90,6 +91,22 @@ export function opaqueId(type: NodeType, key: string): string {
 
 function isPrivateIp(ip: string): boolean {
   return /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.|fe80:|fc|fd)/i.test(ip);
+}
+
+const PERSISTENCE_KEY = /\\(CurrentVersion\\Run|RunOnce|Explorer\\Run|Winlogon|Image File Execution Options|AppInit_DLLs|Services\\|Startup)/i;
+function isPersistenceKey(key: string): boolean { return PERSISTENCE_KEY.test(key); }
+function regShort(key: string): string {
+  const parts = key.split('\\');
+  return parts.length > 3 ? `…\\${parts.slice(-2).join('\\')}` : key;
+}
+function cloudService(ev: { sourcetype?: string; provider?: string; logName?: string }): string {
+  const s = `${ev.sourcetype || ''} ${ev.provider || ''} ${ev.logName || ''}`.toLowerCase();
+  if (/azure|entra/.test(s)) return 'Entra ID (Azure AD)';
+  if (/o365|office365/.test(s)) return 'Microsoft 365';
+  if (/aws|cloudtrail/.test(s)) return 'AWS';
+  if (/okta/.test(s)) return 'Okta';
+  if (/gsuite|gcp|google/.test(s)) return 'Google Workspace';
+  return 'Cloud service';
 }
 
 export function buildProfile(input: BuildInput): UserProfile {
@@ -150,6 +167,7 @@ export function buildProfile(input: BuildInput): UserProfile {
   const privilegedGroups = new Set<string>();
   const executions = new Map<string, Map<string, ProcessExecution>>();
   let skippedScriptBlocks = 0;
+  let genericCount = 0;
 
   // Who performed the event: the investigated user, or (search graphs) the identity in the event
   const actor = (ev: NormalizedEvent): NodeDraft => {
@@ -256,7 +274,68 @@ export function buildProfile(input: BuildInput): UserProfile {
         edge('TRIGGERED', who, a, ev, { protocol: ev.sourcetype, severity: 'MEDIUM' });
         break;
       }
+      case 'defender': {
+        const a = node('alert', ev.threat || ev.signature || 'Defender detection', ev.tsMs, { Source: 'Microsoft Defender', Threat: ev.threat || '', File: ev.filePath || '' }, 'Security product detection');
+        edge('DETECTED', who, a, ev, { protocol: 'Defender', severity: 'HIGH', ttp: 'T1055' });
+        break;
+      }
+      case 'install':
+      case 'uninstall': {
+        const name = ev.product || (ev.category === 'install' ? 'Unknown software' : 'Removed software');
+        const sw = node('software', name, ev.tsMs, { Product: name, Publisher: ev.publisher || '', Version: ev.version || '', Host: ev.host || '' }, ev.category === 'install' ? 'Installed software' : 'Removed software');
+        edge(ev.category === 'install' ? 'INSTALLED' : 'UNINSTALLED', who, sw, ev, { protocol: ev.source || 'MsiInstaller' });
+        break;
+      }
+      case 'service': {
+        const svc = node('service', ev.serviceName || 'service', ev.tsMs, { Service: ev.serviceName || '', ImagePath: ev.imagePath || '', Host: ev.host || '' }, 'Windows service');
+        edge('SERVICE_INSTALL', who, svc, ev, { protocol: 'Service install', ttp: 'T1543.003' }, 0, ev.imagePath);
+        break;
+      }
+      case 'scheduled_task': {
+        const t = node('task', ev.taskName || 'scheduled task', ev.tsMs, { Task: ev.taskName || '', Action: ev.imagePath || '', Host: ev.host || '' }, 'Scheduled task');
+        edge('SCHEDULED_TASK', who, t, ev, { protocol: 'Scheduled task', ttp: 'T1053.005' }, 0, ev.imagePath);
+        break;
+      }
+      case 'registry': {
+        if (!ev.registryKey) break;
+        const r = node('registry', regShort(ev.registryKey), ev.tsMs, { Key: ev.registryKey, Value: ev.registryValue || '', Host: ev.host || '' }, isPersistenceKey(ev.registryKey) ? 'Autorun / persistence key' : 'Registry value');
+        const from = ev.process && ev.host ? processNode(ev.process, ev.host, ev.tsMs) : who;
+        edge('REGISTRY_SET', from, r, ev, { protocol: ev.source || 'Registry', ttp: isPersistenceKey(ev.registryKey) ? 'T1547.001' : undefined });
+        break;
+      }
+      case 'process_access': {
+        if (!ev.targetProcess) break;
+        const src = ev.process && ev.host ? processNode(ev.process, ev.host, ev.tsMs) : who;
+        const tgt = node('process', `${basename(ev.targetProcess)} @ ${ev.host || 'unknown-host'}`, ev.tsMs, { Image: ev.targetProcess, Host: ev.host || '' });
+        edge('ACCESSED_PROCESS', src, tgt, ev, { protocol: ev.message || 'Process access', ttp: /lsass/i.test(ev.targetProcess) ? 'T1003.001' : undefined });
+        break;
+      }
+      case 'usb': {
+        const d = node('device', ev.deviceName || 'removable device', ev.tsMs, { Device: ev.deviceName || '', Host: ev.host || '' }, 'Removable device');
+        edge('CONNECTED_DEVICE', who, d, ev, { protocol: 'USB' });
+        break;
+      }
+      case 'lockout': {
+        const h = ev.host ? node('host', ev.host, ev.tsMs, { Host: ev.host }) : undefined;
+        if (h) edge('OBSERVED', who, h, ev, { protocol: 'Account lockout', action: 'lockout' });
+        break;
+      }
+      case 'cloud_auth': {
+        const svc = cloudService(ev);
+        const c = node('domain', svc, ev.tsMs, { Service: svc, Action: ev.message || '', Scope: 'External' }, 'Cloud service');
+        edge(ev.outcome === 'failure' ? 'AUTH_FAIL' : 'AUTH_SUCCESS', who, c, ev, { protocol: 'Cloud sign-in', outcome: ev.outcome });
+        break;
+      }
+      case 'privilege':
+      case 'generic': {
+        // Nothing dropped: attach to the host it was recorded on (or the root), so it is visible and searchable.
+        genericCount++;
+        const target = ev.host ? node('host', ev.host, ev.tsMs, { Host: ev.host }) : root;
+        edge('OBSERVED', who, target, ev, { protocol: ev.provider || ev.sourcetype, action: ev.message || ev.category, code: ev.eventCode });
+        break;
+      }
       default:
+        genericCount++;
         break;
     }
   }
@@ -452,6 +531,13 @@ export function buildProfile(input: BuildInput): UserProfile {
     baselineAvailable ? 'Baseline: compared against the user\'s earlier history.' : 'Baseline unavailable (no earlier history found): first-seen indicators are disabled.',
     `Not yet implemented: ${NOT_IMPLEMENTED_INDICATORS.join('; ')}.`,
   ];
+  const mappedCats = new Set(['auth','process','network','dns','file','web','account_change','alert','install','uninstall','service','scheduled_task','registry','defender','process_access','usb','cloud_auth','lockout']);
+  const eventsByCat = new Map<string, number>();
+  for (const ev of events) eventsByCat.set(ev.category, (eventsByCat.get(ev.category) || 0) + 1);
+  const unmapped = (eventsByCat.get('generic') || 0) + (eventsByCat.get('privilege') || 0);
+  const covLine = Array.from(eventsByCat.entries()).filter(([c]) => c !== 'other').sort((a, b) => b[1] - a[1]).map(([c, n]) => `${c.replace(/_/g, ' ')} ${n}`).join(', ');
+  if (covLine) notes.push(`Event coverage: ${covLine}.`);
+  if (unmapped) notes.push(`${unmapped} event(s) are not modelled as their own step yet and are shown as generic activity on the host they occurred on (see the Event Timeline). Ask to map a type to give it a dedicated node.`);
   if (skippedScriptBlocks) notes.push(`${skippedScriptBlocks} PowerShell script block(s) with no suspicious content were not drawn (no matching PowerShell process in the window).`);
   if (searchMode) notes.push('Search graph: every identity in the results is shown; risk is scored per identity and the highest score is used.');
   if (truncated) notes.push(`Graph truncated to ${outNodes.length} nodes / ${outEdges.length} edges (from ${nodes.size} / ${edges.size}); highest-risk edges kept.`);
@@ -486,6 +572,8 @@ export function buildProfile(input: BuildInput): UserProfile {
     baselineAvailable,
     notes,
     rootId: root.id,
+    coverage: Object.fromEntries(eventsByCat),
+    unmappedEventCount: unmapped,
     kind: searchMode ? 'search' : 'entity',
     query: searchMode ? input.query : undefined,
     windowStart: new Date(t0Ms - windowHours * HOUR_MS).toISOString(),

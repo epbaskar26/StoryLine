@@ -32,6 +32,7 @@ export interface LogSource {
   fetchUserEvents(user: string, fromMs: number, toMs: number): Promise<{ events: NormalizedEvent[]; rawCount: number }>;
   fetchBaseline(user: string, fromMs: number, toMs: number): Promise<Set<string> | null>;
   fetchEntityEvents(entity: string, fromMs: number, toMs: number): Promise<NormalizedEvent[]>;
+  fetchHostEvents(hosts: string[], fromMs: number, toMs: number): Promise<NormalizedEvent[]>;
   searchUsers(term: string, fromMs: number, toMs: number): Promise<{ user: string; count: number }[]>;
   runAdhocQuery(query: string, fromMs: number, toMs: number): Promise<AdhocRow[]>;
   searchEvents(query: string, fromMs: number, toMs: number, limit: number): Promise<NormalizedEvent[]>;
@@ -57,6 +58,7 @@ export function splunkSource(cfg: splunk.SplunkConfig): LogSource {
       return { events: normalizeRows(rows), rawCount: rows.length };
     },
     fetchBaseline: (user, from, to) => splunk.fetchBaseline(cfg, user, s(from), s(to)),
+    async fetchHostEvents(hosts, from, to) { return normalizeRows(await splunk.fetchHostEvents(cfg, hosts, s(from), s(to))); },
     async fetchEntityEvents(entity, from, to) {
       return normalizeRows(await splunk.fetchEntityEvents(cfg, entity, s(from), s(to)));
     },
@@ -98,6 +100,7 @@ export function elasticSource(cfg: elastic.ElasticConfig): LogSource {
     },
     fetchUserEvents: (user, from, to) => elastic.fetchUserEvents(cfg, user, from, to),
     fetchBaseline: (user, from, to) => elastic.fetchBaseline(cfg, user, from, to),
+    fetchHostEvents: (hosts, from, to) => elastic.fetchHostEvents(cfg, hosts, from, to),
     fetchEntityEvents: (entity, from, to) => elastic.fetchEntityEvents(cfg, entity, from, to),
     searchUsers: (term, from, to) => elastic.searchUsers(cfg, term, from, to),
     runAdhocQuery: (query, from, to) => elastic.runAdhocQuery(cfg, query, from, to),

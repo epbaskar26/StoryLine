@@ -1,3 +1,21 @@
+# Changes in 0.7.0
+
+## Full activity coverage
+
+- **Nothing is dropped.** Any event WatchMe does not model as its own step now appears as generic activity (an `OBSERVED` edge) on the host it happened on, is listed in the Event Timeline, and is counted in two new data notes: **Event coverage** (a per-category breakdown) and **N events not modelled yet**. You see everything on day one; the unmapped list shows what to promote next.
+- **New event types, each with a node, edge and risk rule:**
+  - Software install / uninstall (MsiInstaller 11707/11724/1033/1034) → `software` node, "Software installed".
+  - Windows service install (System 7045, Security 4697) → `service` node, "Service installed" (T1543.003).
+  - Scheduled task creation (106 / 4698) → `task` node, "Scheduled task created" (T1053.005).
+  - Registry autorun (Sysmon 12/13/14) → `registry` node, "Registry autorun persistence" (T1547).
+  - LSASS / process access (Sysmon 10) → `ACCESSED_PROCESS` edge, "LSASS process access" (T1003.001).
+  - Microsoft Defender / EDR detections (1116/1117) → `DETECTED` edge, "Security product detection".
+  - Account lockouts (4740), audit-log-cleared (1102/104, "Audit log cleared", T1070.001), special privileges (4672), USB devices, and cloud sign-ins (M365 / Entra / AWS / Okta).
+- **Host events in user investigations.** When you open a user, WatchMe also pulls host-only events (service, task, Defender, registry, log-clear) from the hosts that user logged onto, so activity with no user field still shows up. Toggle with `INCLUDE_HOST_EVENTS`.
+- **Collection updated.** `tools/winlogbeat/winlogbeat.yml` now ships the System, Application, TaskScheduler and Defender logs as well. New `docs/COVERAGE.md` lists every mapped event ID and what still needs Sysmon or auditing turned on. Replace your Winlogbeat config and `Restart-Service winlogbeat`.
+- New icons and graph shapes for software, service, task, registry, device and generic-event nodes.
+- The Marcus Ross demo now includes a Defender detection, an LSASS access, a persistence service and a remote-access-tool install.
+
 # Changes in 0.6.0
 
 ## New

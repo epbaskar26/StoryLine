@@ -261,6 +261,9 @@ export const DEMO_USERS: Record<string, UserProfile> = {
       { indicator: 'Encoded PowerShell', weight: 15, mitreTactic: 'T1059.001', eventIds: ['evt-mr40'], description: 'Hidden PowerShell with an encoded command, started by rundll32' },
       { indicator: 'Mass file access (Ransomware staging)', weight: 15, mitreTactic: 'T1005', eventIds: ['evt-mr15'], description: 'Enumerated 42,000 files across network shares in 1 hour' },
       { indicator: 'Inhibit system recovery', weight: 20, mitreTactic: 'T1490', eventIds: ['evt-mr03'], description: 'vssadmin deleted all shadow copies' },
+      { indicator: 'Security product detection', weight: 25, mitreTactic: 'T1055', eventIds: ['evt-mr41d'], description: 'Microsoft Defender flagged CobaltStrike beacon DLL' },
+      { indicator: 'LSASS process access', weight: 20, mitreTactic: 'T1003.001', eventIds: ['evt-mr40b'], description: 'rundll32 opened LSASS with credential-read access' },
+      { indicator: 'Service installed', weight: 12, mitreTactic: 'T1543.003', eventIds: ['evt-mr38'], description: 'Auto-start service WinDefendUpd created for persistence' },
       { indicator: 'VIP user multiplier', weight: 4, mitreTactic: 'Context', eventIds: [], description: '1.2x score multiplier for Executive Sales Director' }
     ],
     nodes: [
@@ -291,7 +294,11 @@ export const DEMO_USERS: Record<string, UserProfile> = {
         details: { Image: 'C:\\Windows\\System32\\vssadmin.exe', Host: 'THINKPAD-MR-20', Parent: 'C:\\Windows\\System32\\rundll32.exe' },
         executions: [{ ts: 'H3', commandLine: 'vssadmin.exe delete shadows /all /quiet', parent: 'C:\\Windows\\System32\\rundll32.exe', user: 'm.ross', eventId: 'evt-mr03', count: 1, source: 'Sysmon 1' }] },
       { id: 'file_canary', name: 'Q3_Contracts_CANARY.docx.locked', type: 'file', riskScore: 100, riskBand: 'HIGH', compromised: true, classification: 'Ransomware canary file modified', firstSeenHour: 2, firstSeenInBaseline: false,
-        details: { Path: '\\\\FS-CORP-SHARE01\\Legal\\Q3_Contracts_CANARY.docx.locked', Note: 'Canary file renamed with .locked extension' } }
+        details: { Path: '\\\\FS-CORP-SHARE01\\Legal\\Q3_Contracts_CANARY.docx.locked', Note: 'Canary file renamed with .locked extension' } },
+      { id: 'proc_lsass', name: 'lsass.exe @ THINKPAD-MR-20', type: 'process', riskScore: 92, riskBand: 'HIGH', compromised: true, classification: 'Credential store process (targeted)', firstSeenHour: 40, firstSeenInBaseline: true, details: { Image: 'C:\\Windows\\System32\\lsass.exe', Host: 'THINKPAD-MR-20' } },
+      { id: 'svc_persist', name: 'WinDefendUpd', type: 'service', riskScore: 90, riskBand: 'HIGH', compromised: true, classification: 'Malicious service (persistence)', firstSeenHour: 38, firstSeenInBaseline: false, details: { Service: 'WinDefendUpd', ImagePath: 'C:\\Users\\mross\\AppData\\Roaming\\msupd.dll', StartType: 'auto start' } },
+      { id: 'alert_defender', name: 'Behavior:Win32/CobaltStrike.A', type: 'alert', riskScore: 95, riskBand: 'HIGH', compromised: true, classification: 'Microsoft Defender detection', firstSeenHour: 41, firstSeenInBaseline: false, details: { Source: 'Microsoft Defender', Severity: 'High', File: 'msupd.dll' } },
+      { id: 'sw_anydesk', name: 'AnyDesk', type: 'software', riskScore: 45, riskBand: 'MEDIUM', compromised: false, classification: 'Installed software (remote access tool)', firstSeenHour: 37, firstSeenInBaseline: false, details: { Product: 'AnyDesk', Publisher: 'AnyDesk Software GmbH', Version: '8.0.8', Host: 'THINKPAD-MR-20' } }
     ],
     edges: [
       { id: 're0', source: 'u_mross', target: 'host_sales', action: 'AUTH_SUCCESS', type: 'AUTH_SUCCESS', protocol: 'Interactive', hour: 46, eventCount: 3, status: 'allowed', details: 'Normal interactive logon to the executive laptop', firstSeenInBaseline: true, eventIds: ['evt-mr46'] },
@@ -304,7 +311,11 @@ export const DEMO_USERS: Record<string, UserProfile> = {
       { id: 're2d', source: 'proc_ps', target: 'file_persist', action: 'WROTE', type: 'WROTE', protocol: 'Sysmon 11', hour: 39, eventCount: 1, status: 'critical', details: 'PowerShell dropped a shortcut in the Startup folder so the beacon survives reboot', firstSeenInBaseline: false, ttp: ['T1547.001'], eventIds: ['evt-mr39b'] },
       { id: 're3', source: 'proc_rundll', target: 'host_share', action: 'ACCESSED', type: 'ACCESSED', protocol: 'SMB/445', hour: 15, eventCount: 42000, status: 'critical', details: 'Beacon enumerated 42,000 files across the Legal, Contracts and Sales shares', firstSeenInBaseline: false, ttp: ['T1083', 'T1135'], eventIds: ['evt-mr15'] },
       { id: 're4', source: 'proc_rundll', target: 'proc_vss', action: 'SPAWNED', type: 'SPAWNED', protocol: 'Child process', hour: 3, eventCount: 1, status: 'critical', details: 'Shadow copies deleted to block recovery (pre-ransomware)', firstSeenInBaseline: false, ttp: ['T1490'], eventIds: ['evt-mr03'] },
-      { id: 're5', source: 'proc_rundll', target: 'file_canary', action: 'WROTE', type: 'WROTE', protocol: 'SMB/445', hour: 2, eventCount: 1, status: 'critical', details: 'Canary file on the Legal share renamed to .locked: encryption has started', firstSeenInBaseline: false, ttp: ['T1486'], eventIds: ['evt-mr02'] }
+      { id: 're5', source: 'proc_rundll', target: 'file_canary', action: 'WROTE', type: 'WROTE', protocol: 'SMB/445', hour: 2, eventCount: 1, status: 'critical', details: 'Canary file on the Legal share renamed to .locked: encryption has started', firstSeenInBaseline: false, ttp: ['T1486'], eventIds: ['evt-mr02'] },
+      { id: 're6', source: 'proc_invoice', target: 'alert_defender', action: 'DETECTED', type: 'DETECTED', protocol: 'Defender', hour: 41, eventCount: 1, status: 'critical', details: 'Microsoft Defender flagged the beacon DLL as CobaltStrike (action: quarantine failed)', firstSeenInBaseline: false, ttp: ['T1055'], eventIds: ['evt-mr41d'] },
+      { id: 're7', source: 'proc_rundll', target: 'proc_lsass', action: 'ACCESSED_PROCESS', type: 'ACCESSED_PROCESS', protocol: 'Sysmon 10 · access 0x1410', hour: 40, eventCount: 1, status: 'critical', details: 'rundll32 opened LSASS with credential-read access (possible dumping)', firstSeenInBaseline: false, ttp: ['T1003.001'], eventIds: ['evt-mr40b'] },
+      { id: 're8', source: 'proc_rundll', target: 'svc_persist', action: 'SERVICE_INSTALL', type: 'SERVICE_INSTALL', protocol: 'Service install', hour: 38, eventCount: 1, status: 'critical', details: 'Installed the service WinDefendUpd pointing at the dropped DLL (auto-start persistence)', firstSeenInBaseline: false, ttp: ['T1543.003'], eventIds: ['evt-mr38'] },
+      { id: 're9', source: 'u_mross', target: 'sw_anydesk', action: 'INSTALLED', type: 'INSTALLED', protocol: 'MsiInstaller', hour: 37, eventCount: 1, status: 'anomalous', details: 'AnyDesk remote-access tool installed (T1219 risk if unsanctioned)', firstSeenInBaseline: false, ttp: ['T1219'], eventIds: ['evt-mr37'] }
     ],
     milestones: [
       { hour: 48, timeLabel: 'T-48:00', title: 'Normal Sales Operations', severity: 'low', description: 'User answering email via Outlook 365.', mitreTactic: 'Normal Operations' },
@@ -419,7 +430,15 @@ export const DEFAULT_ADMIN_CONFIG: AdminConfig = {
     lateralFanOut: 20,
     privilegeChange: 20,
     massFileAccess: 15,
-    largeUpload: 20
+    largeUpload: 20,
+    serviceInstall: 12,
+    scheduledTask: 12,
+    registryPersistence: 15,
+    lsassAccess: 20,
+    securityDetection: 25,
+    softwareInstall: 4,
+    accountLockout: 10,
+    logCleared: 20
   },
   connectors: [
     { 

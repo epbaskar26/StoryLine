@@ -35,6 +35,7 @@ const SOURCE = loaded.source; // live log source, or null in demo mode
 const ANALYST = process.env.WATCHME_ANALYST || 'local.analyst';
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || '';
 const BASELINE_DAYS = parseInt(process.env.BASELINE_DAYS || '30', 10);
+const INCLUDE_HOST_EVENTS = process.env.INCLUDE_HOST_EVENTS !== 'false';
 const DEFAULT_T0 = process.env.DEFAULT_T0 || ''; // e.g. 2018-08-21T00:00:00Z for BOTS data
 const CACHE_TTL_MS = parseInt(process.env.GRAPH_CACHE_TTL_MS || '300000', 10);
 const HOUR_MS = 3_600_000;
@@ -199,6 +200,21 @@ async function buildLiveProfile(entityKey: string, windowHours: number, t0Ms: nu
   const src = SOURCE!;
   const start = t0Ms - windowHours * HOUR_MS;
   const { events, rawCount } = await src.fetchUserEvents(entityKey, start, t0Ms);
+  // Also pull host-only events (service installs, scheduled tasks, Defender, registry, log-clear) on the
+  // hosts this user logged onto, so activity with no user field still appears in the user's graph.
+  let hostEventCount = 0;
+  if (INCLUDE_HOST_EVENTS && events.length) {
+    const hosts = Array.from(new Set(events.filter(e => e.category === 'auth' && e.outcome === 'success').flatMap(e => [e.destHost, e.host]).filter((h): h is string => !!h)));
+    if (hosts.length) {
+      try {
+        const extra = await src.fetchHostEvents(hosts, start, t0Ms);
+        const seen = new Set(events.map(e => e.id));
+        for (const e of extra) if (!seen.has(e.id)) { events.push(e); hostEventCount++; }
+      } catch (err: any) {
+        console.warn('Host-event query failed:', err.message);
+      }
+    }
+  }
   const alerts = (await store.listAlerts(entityKey)).filter(a => {
     const ts = Date.parse(a.ts);
     return ts >= start && ts <= t0Ms;
@@ -228,6 +244,7 @@ async function buildLiveProfile(entityKey: string, windowHours: number, t0Ms: nu
     dataSource: src.kind,
     sourceLabel: src.label,
   });
+  if (hostEventCount) profile.notes?.push(`Included ${hostEventCount} host-only event(s) (service, task, Defender, registry) from the hosts ${entityKey} logged onto.`);
   if (rawCount >= src.maxEvents) profile.notes?.push(`${src.label} returned the maximum of ${src.maxEvents} events; older activity may be missing (raise ${src.kind.toUpperCase()}_MAX_EVENTS).`);
   return profile;
 }

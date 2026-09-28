@@ -16,6 +16,8 @@ const ACTION_TEXT: Record<string, string> = {
   AUTH_SUCCESS: 'logged on to', AUTH_FAIL: 'failed to log on to', FROM_IP: 'connected from', CONNECTED_TO: 'connected to',
   ACCESSED: 'accessed', EXECUTED: 'ran', SPAWNED: 'started', WROTE: 'wrote', RAN_ON: 'ran on', MEMBER_CHANGE: 'changed group membership of',
   UPLOADED: 'uploaded data to', TRIGGERED: 'triggered alert', MATCHED: 'matched',
+  INSTALLED: 'installed', UNINSTALLED: 'removed', SERVICE_INSTALL: 'installed service', SCHEDULED_TASK: 'created scheduled task',
+  REGISTRY_SET: 'set registry value', ACCESSED_PROCESS: 'opened process', DETECTED: 'was flagged by security product as', CONNECTED_DEVICE: 'connected device', OBSERVED: 'event on',
 };
 
 // Tactic when the evidence carries no technique id
@@ -41,6 +43,12 @@ function inferTactic(step: PathStep, isFirstRiskyLogin: boolean): string {
   if (t === 'MEMBER_CHANGE') return 'Privilege Escalation';
   if (t === 'WROTE') return /\.(locked|encrypted|crypt)$/i.test(step.node.name) ? 'Impact' : /startup|\\run|\.lnk$/i.test(step.node.details?.Path || step.node.name) ? 'Persistence' : 'Execution';
   if (t === 'ACCESSED') return 'Collection';
+  if (t === 'INSTALLED' || t === 'UNINSTALLED') return 'Software deployment';
+  if (t === 'SERVICE_INSTALL' || t === 'SCHEDULED_TASK') return 'Persistence';
+  if (t === 'REGISTRY_SET') return 'Persistence';
+  if (t === 'ACCESSED_PROCESS') return 'Credential Access';
+  if (t === 'DETECTED') return 'Detection';
+  if (t === 'CONNECTED_DEVICE') return 'Initial Access';
   if (t === 'TRIGGERED') return 'Detection';
   return 'Other activity';
 }

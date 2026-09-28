@@ -288,7 +288,13 @@ export const TemporalGraphCanvas: React.FC<Props> = ({
         ctx.rect(x - r * 0.8, y - r * 1.1, r * 1.6, r * 2.2);
         break;
       case 'process': // Pill / Rounded Rect
+      case 'service':
+      case 'task':
+      case 'software':
         ctx.roundRect(x - r * 1.1, y - r * 0.8, r * 2.2, r * 1.6, 6);
+        break;
+      case 'registry': // small square, like host but rounded
+        ctx.roundRect(x - r, y - r, r * 2, r * 2, 4);
         break;
       case 'alert': // Alert Octagon
         for (let i = 0; i < 8; i++) {

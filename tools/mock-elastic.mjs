@@ -65,6 +65,26 @@ add(6 * H + 60_000, sysmon('22', { dns: { question: { name: 'transfer.sh' } } })
 add(6 * H, { event: { dataset: 'proxy.access', outcome: 'success' }, host: { name: 'baskaranep' }, user: { name: 'epbas' }, related: { user: ['epbas'] }, url: { full: 'https://transfer.sh/upload', domain: 'transfer.sh' }, http: { request: { bytes: 700 * 1024 * 1024, method: 'PUT' } }, source: { ip: '192.168.1.20' } });
 // Noise from another user on srv-hr-db01 (shows up in 1-hop expansion)
 add(12 * H, sec('4624', 'success', 'srv-hr-db01', { TargetUserName: 'kfinch', LogonType: '3', IpAddress: '192.168.1.44' }));
+// --- Non-auth activity: software, persistence, credential access, detection, and an unmapped event ---
+const app = (code, data, extra = {}) => ({ event: { code, module: 'windows', dataset: 'windows.application' }, winlog: { channel: 'Application', computer_name: 'BASKARANEP', event_id: code, provider_name: 'MsiInstaller', event_data: data }, host: { name: 'baskaranep' }, user: { name: 'epbas' }, ...extra });
+const sys = (code, provider, data, extra = {}) => ({ event: { code, module: 'windows', dataset: 'windows.system' }, winlog: { channel: 'System', computer_name: 'BASKARANEP', event_id: code, provider_name: provider, event_data: data }, host: { name: 'baskaranep' }, ...extra });
+// Software installed (normal)
+add(30 * H, app('11707', { ProductName: 'Zoom Workplace', Manufacturer: 'Zoom Video Communications', Version: '6.1.0' }));
+// Malicious service install pointing at the dropped DLL (persistence)
+add(18 * H - 5 * 60_000, sys('7045', 'Service Control Manager', { ServiceName: 'WinDefendUpd', ImagePath: 'C:\\Users\\epbas\\AppData\\Roaming\\msupd.dll', ServiceType: 'user mode service', StartType: 'auto start' }, { user: { name: 'epbas' } }));
+// Sysmon 13: Run key persistence
+{ const d = sysmon('13', {}); d.winlog.event_data = { TargetObject: 'HKU\\S-1-5-21-1-1001\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\\OneDriveSync', Details: 'C:\\Users\\epbas\\AppData\\Roaming\\msupd.dll' }; docs.push({ _id: `doc${++seq}`, _source: { '@timestamp': iso(NOW - (18 * H - 6 * 60_000)), ...d } }); }
+// Sysmon 10: LSASS access (credential dumping)
+{ const d = sysmon('10', {}); d.winlog.event_data = { SourceImage: 'C:\\Windows\\System32\\rundll32.exe', TargetImage: 'C:\\Windows\\System32\\lsass.exe', GrantedAccess: '0x1410' }; docs.push({ _id: `doc${++seq}`, _source: { '@timestamp': iso(NOW - (18 * H - 7 * 60_000)), ...d } }); }
+// Defender detection
+add(17 * H, { event: { code: '1116', module: 'windows', dataset: 'windows.defender' }, winlog: { channel: 'Microsoft-Windows-Windows Defender/Operational', computer_name: 'BASKARANEP', event_id: '1116', provider_name: 'Windows Defender', event_data: { 'Threat Name': 'Behavior:Win32/CobaltStrike.A', Path: 'C:\\Users\\epbas\\AppData\\Roaming\\msupd.dll' } }, host: { name: 'baskaranep' }, user: { name: 'epbas' } });
+// Audit log cleared (defense evasion)
+add(16 * H, { event: { code: '1102', module: 'windows', dataset: 'windows.security' }, winlog: { channel: 'Security', computer_name: 'BASKARANEP', event_id: '1102', provider_name: 'Microsoft-Windows-Eventlog', event_data: {} }, host: { name: 'baskaranep' }, user: { name: 'epbas' } });
+// A host-only service install on a server the user logged onto (no user field): tests host-event pull
+add(17 * H - 3 * 60_000, { event: { code: '7045', module: 'windows', dataset: 'windows.system' }, winlog: { channel: 'System', computer_name: 'SRV-FILES', event_id: '7045', provider_name: 'Service Control Manager', event_data: { ServiceName: 'PSEXESVC', ImagePath: 'C:\\Windows\\PSEXESVC.exe', ServiceType: 'user mode service' } }, host: { name: 'srv-files' } });
+// An unmapped event type: should appear as generic, never dropped
+add(12 * H + 30 * 60_000, { event: { code: '8004', module: 'windows', dataset: 'windows.applocker' }, winlog: { channel: 'Microsoft-Windows-AppLocker/EXE and DLL', computer_name: 'BASKARANEP', event_id: '8004', provider_name: 'Microsoft-Windows-AppLocker', event_data: { PolicyName: 'EXE', TargetProcessId: '4242' } }, host: { name: 'baskaranep' }, user: { name: 'epbas' } });
+
 // Machine/system account noise that must be ignored
 add(2 * H, sec('4624', 'success', 'baskaranep', { TargetUserName: 'SYSTEM', LogonType: '5' }));
 
@@ -83,6 +103,11 @@ function matches(d, q) {
     const [field, r] = Object.entries(q.range)[0];
     const t = Date.parse(get(d, field));
     return (!r.gte || t >= Date.parse(r.gte)) && (!r.lte || t <= Date.parse(r.lte));
+  }
+  if (q.terms) {
+    const [field, list] = Object.entries(q.terms)[0];
+    const set = new Set(list.map(v => String(v).toLowerCase()));
+    return vals(d, field).some(v => set.has(v.toLowerCase()));
   }
   if (q.term) {
     const [field, spec] = Object.entries(q.term)[0];

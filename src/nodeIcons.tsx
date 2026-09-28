@@ -6,7 +6,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import {
   User, Users, UserCog, Monitor, Laptop, Server, Database, Network, Globe, Cloud, CloudUpload, Mail, SquareTerminal,
   FileText, FileArchive, FileSpreadsheet, FileCode, FileImage, FileLock, Presentation, Cpu, Cog, KeyRound, AppWindow,
-  FolderOpen, MessagesSquare, Siren, ShieldAlert, Search, Bug, Package, Router, type LucideIcon,
+  FolderOpen, MessagesSquare, Siren, ShieldAlert, Search, Bug, Package, Router, PackagePlus, Wrench, CalendarClock, Regex, Usb, CircleDot, type LucideIcon,
 } from 'lucide-react';
 import type { SecurityNode } from './types';
 
@@ -99,6 +99,18 @@ export function iconFor(node: SecurityNode): IconSpec {
       return /critical|high/i.test(node.details?.Severity || '') ? { Icon: Siren, kind: 'alert', tint: C.red } : { Icon: ShieldAlert, kind: 'alert', tint: C.orange };
     case 'query':
       return { Icon: Search, kind: 'log search', tint: C.blue };
+    case 'software':
+      return { Icon: PackagePlus, kind: node.classification?.includes('Removed') ? 'removed software' : 'installed software', tint: node.classification?.includes('Removed') ? C.slate : C.blue };
+    case 'service':
+      return { Icon: Wrench, kind: 'Windows service', tint: C.orange };
+    case 'task':
+      return { Icon: CalendarClock, kind: 'scheduled task', tint: C.orange };
+    case 'registry':
+      return { Icon: Regex, kind: /persistence|autorun/i.test(node.classification || '') ? 'autorun key' : 'registry value', tint: C.purple };
+    case 'device':
+      return { Icon: Usb, kind: 'removable device', tint: C.teal };
+    case 'event':
+      return { Icon: CircleDot, kind: 'event', tint: C.slate };
     default:
       return { Icon: Package, kind: node.type, tint: C.slate };
   }

@@ -1,4 +1,5 @@
-export type NodeType = 'user' | 'host' | 'ip' | 'application' | 'file' | 'process' | 'domain' | 'alert' | 'query';
+export type NodeType = 'user' | 'host' | 'ip' | 'application' | 'file' | 'process' | 'domain' | 'alert' | 'query'
+  | 'software' | 'service' | 'task' | 'registry' | 'device' | 'event';
 
 export type EdgeType =
   | 'AUTH_FAIL'
@@ -13,7 +14,16 @@ export type EdgeType =
   | 'TRIGGERED'
   | 'SPAWNED' // parent process started a child process
   | 'WROTE' // process created or modified a file
-  | 'MATCHED'; // log search matched this identity (search graphs)
+  | 'MATCHED' // log search matched this identity (search graphs)
+  | 'INSTALLED' // installed software
+  | 'UNINSTALLED' // removed software
+  | 'SERVICE_INSTALL' // installed a Windows service
+  | 'SCHEDULED_TASK' // created a scheduled task
+  | 'REGISTRY_SET' // set an autorun / persistence registry value
+  | 'ACCESSED_PROCESS' // opened another process (e.g. LSASS read)
+  | 'DETECTED' // security product detection (Defender, EDR)
+  | 'CONNECTED_DEVICE' // USB / removable device
+  | 'OBSERVED'; // generic: an event WatchMe does not model as its own edge yet
 
 export type RiskBand = 'LOW' | 'MEDIUM' | 'HIGH';
 
@@ -136,6 +146,8 @@ export interface UserProfile {
   kind?: 'entity' | 'search';
   query?: string; // search graphs: the analyst's query
   windowStart?: string; // ISO start of the window (t0 - windowHours)
+  coverage?: Record<string, number>; // event count per category, for the coverage panel
+  unmappedEventCount?: number; // events shown as generic activity
 }
 
 export interface EntitySummary {

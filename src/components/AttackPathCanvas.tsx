@@ -45,6 +45,8 @@ const STEP_LABEL: Record<string, string> = {
   AUTH_SUCCESS: 'login', AUTH_FAIL: 'failed login', FROM_IP: 'from IP', CONNECTED_TO: 'connected', ACCESSED: 'accessed',
   EXECUTED: 'ran', RAN_ON: 'on host', MEMBER_CHANGE: 'group change', UPLOADED: 'upload', TRIGGERED: 'alert',
   SPAWNED: 'started', WROTE: 'wrote', MATCHED: 'matched',
+  INSTALLED: 'installed', UNINSTALLED: 'removed', SERVICE_INSTALL: 'service', SCHEDULED_TASK: 'task',
+  REGISTRY_SET: 'registry', ACCESSED_PROCESS: 'opened', DETECTED: 'detected', CONNECTED_DEVICE: 'device', OBSERVED: 'event',
 };
 
 const SEV_COLORS = {

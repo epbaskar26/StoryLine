@@ -227,6 +227,88 @@ export function evaluateIndicators(
     });
   }
 
+  // 10. New Windows service installed (a common persistence and lateral-movement technique)
+  const svcEdges = edges.filter(e => e.type === 'SERVICE_INSTALL');
+  if (svcEdges.length) {
+    out.push({
+      indicator: 'Service installed', weight: w('serviceInstall', 12), mitreTactic: 'T1543.003',
+      description: `${svcEdges.length} Windows service(s) installed: ${svcEdges.slice(0, 3).map(e => e.targetName).join(', ')}`,
+      eventIds: cap(svcEdges.flatMap(e => e.eventIds)), edgeKeys: svcEdges.map(e => e.key), severity: 'anomalous',
+    });
+  }
+
+  // 11. Scheduled task created (persistence / execution)
+  const taskEdges = edges.filter(e => e.type === 'SCHEDULED_TASK');
+  if (taskEdges.length) {
+    out.push({
+      indicator: 'Scheduled task created', weight: w('scheduledTask', 12), mitreTactic: 'T1053.005',
+      description: `${taskEdges.length} scheduled task(s) created: ${taskEdges.slice(0, 3).map(e => e.targetName).join(', ')}`,
+      eventIds: cap(taskEdges.flatMap(e => e.eventIds)), edgeKeys: taskEdges.map(e => e.key), severity: 'anomalous',
+    });
+  }
+
+  // 12. Autorun registry persistence (Run keys, Winlogon, IFEO ...)
+  const runKeys = edges.filter(e => e.type === 'REGISTRY_SET' && Array.from(e.meta.ttp || []).some(t => /^T1547/.test(t)));
+  if (runKeys.length) {
+    out.push({
+      indicator: 'Registry autorun persistence', weight: w('registryPersistence', 15), mitreTactic: 'T1547.001',
+      description: `${runKeys.length} autorun registry value(s) set: ${runKeys.slice(0, 3).map(e => e.targetName).join(', ')}`,
+      eventIds: cap(runKeys.flatMap(e => e.eventIds)), edgeKeys: runKeys.map(e => e.key), severity: 'critical',
+    });
+  }
+
+  // 13. LSASS / process access (credential theft)
+  const lsass = edges.filter(e => e.type === 'ACCESSED_PROCESS' && /lsass/i.test(e.targetName));
+  if (lsass.length) {
+    out.push({
+      indicator: 'LSASS process access', weight: w('lsassAccess', 20), mitreTactic: 'T1003.001',
+      description: `Another process opened LSASS ${lsass.reduce((n, e) => n + e.count, 0)} time(s) (possible credential dumping)`,
+      eventIds: cap(lsass.flatMap(e => e.eventIds)), edgeKeys: lsass.map(e => e.key), severity: 'critical',
+    });
+  }
+
+  // 14. Security product detection (Defender / EDR)
+  const det = edges.filter(e => e.type === 'DETECTED');
+  if (det.length) {
+    out.push({
+      indicator: 'Security product detection', weight: w('securityDetection', 25), mitreTactic: 'T1204',
+      description: `${det.length} endpoint detection(s): ${det.slice(0, 3).map(e => e.targetName).join('; ')}`,
+      eventIds: cap(det.flatMap(e => e.eventIds)), edgeKeys: det.map(e => e.key), severity: 'critical',
+    });
+  }
+
+  // 15. Software installed (informational unless combined with other risk; low weight)
+  const installs = edges.filter(e => e.type === 'INSTALLED');
+  if (installs.length) {
+    out.push({
+      indicator: 'Software installed', weight: w('softwareInstall', 4), mitreTactic: 'T1072',
+      description: `${installs.length} program(s) installed: ${installs.slice(0, 4).map(e => e.targetName).join(', ')}`,
+      eventIds: cap(installs.flatMap(e => e.eventIds)), edgeKeys: installs.map(e => e.key), severity: 'anomalous',
+    });
+  }
+
+  // 16. Account lockout burst (many logon failures)
+  const lockouts = events.filter(e => e.category === 'lockout');
+  if (lockouts.length >= 3) {
+    const ids = lockouts.map(e => e.id);
+    out.push({
+      indicator: 'Repeated account lockouts', weight: w('accountLockout', 10), mitreTactic: 'T1110',
+      description: `${lockouts.length} account lockout(s) in the window`,
+      eventIds: cap(ids), edgeKeys: edgesFor(ids, ['OBSERVED']), severity: 'anomalous',
+    });
+  }
+
+  // 17. Audit log cleared (defense evasion)
+  const cleared = events.filter(e => e.category === 'generic' && e.signature === 'Audit log cleared');
+  if (cleared.length) {
+    const ids = cleared.map(e => e.id);
+    out.push({
+      indicator: 'Audit log cleared', weight: w('logCleared', 20), mitreTactic: 'T1070.001',
+      description: `The Windows audit log was cleared ${cleared.length} time(s)`,
+      eventIds: cap(ids), edgeKeys: edgesFor(ids, ['OBSERVED']), severity: 'critical',
+    });
+  }
+
   // 9. Correlated alerts (from SIEM data or alert webhooks)
   const alertEdges = edges.filter(e => e.type === 'TRIGGERED');
   if (alertEdges.length) {

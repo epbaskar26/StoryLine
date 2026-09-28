@@ -1,7 +1,10 @@
 // Maps Splunk rows (Windows Security, Sysmon, and CIM-style fields) to one normalized event shape.
 import type { SplunkRow } from './splunk';
 
-export type EventCategory = 'auth' | 'process' | 'network' | 'file' | 'account_change' | 'web' | 'dns' | 'alert' | 'other';
+export type EventCategory =
+  | 'auth' | 'process' | 'network' | 'file' | 'account_change' | 'web' | 'dns' | 'alert'
+  | 'install' | 'uninstall' | 'service' | 'scheduled_task' | 'registry' | 'defender'
+  | 'process_access' | 'lockout' | 'privilege' | 'usb' | 'cloud_auth' | 'generic' | 'other';
 
 export interface NormalizedEvent {
   id: string;
@@ -31,6 +34,24 @@ export interface NormalizedEvent {
   action?: string;
   scriptBlock?: boolean; // PowerShell 4104: commandLine holds script block text
   source?: string; // short provenance label, e.g. "Sysmon 1"
+  // Software install / uninstall
+  product?: string;
+  version?: string;
+  publisher?: string;
+  // Service / scheduled task / registry persistence
+  serviceName?: string;
+  imagePath?: string; // service binary or task action
+  taskName?: string;
+  registryKey?: string;
+  registryValue?: string;
+  // Process access (e.g. LSASS read), security product detections, devices
+  targetProcess?: string;
+  threat?: string; // Defender / EDR threat name
+  deviceName?: string;
+  // Generic / unmapped events keep enough to show and to search
+  provider?: string; // event provider / channel
+  logName?: string; // Security | System | Application | ...
+  message?: string; // short human-readable description
 }
 
 const EMPTY = new Set(['', '-', 'n/a', 'null', 'unknown', '::1', '127.0.0.1', '0.0.0.0', '::']);
@@ -82,6 +103,24 @@ function domainFrom(url?: string, site?: string): string | undefined {
 const AUTH_SUCCESS_CODES = new Set(['4624', '4648', '4768', '4769', '4776']);
 const AUTH_FAIL_CODES = new Set(['4625', '4771']);
 const GROUP_ADD_CODES = new Set(['4728', '4732', '4756', '4720', '4738']);
+const MSI_INSTALL_CODES = new Set(['11707', '1033']);        // Application log, MsiInstaller: install completed
+const MSI_UNINSTALL_CODES = new Set(['11724', '1034']);      // uninstall completed
+const SERVICE_INSTALL_CODES = new Set(['7045', '4697']);     // new service installed (System / Security)
+const SCHEDULED_TASK_CODES = new Set(['4698', '106']);       // scheduled task created
+const DEFENDER_CODES = new Set(['1116', '1117', '1006', '1007']); // Defender malware detected / action taken
+const LOCKOUT_CODES = new Set(['4740']);
+const PRIVILEGE_CODES = new Set(['4672', '4673', '4674']);
+const CLEARED_LOG_CODES = new Set(['1102', '104']);          // audit log cleared (defense evasion)
+
+// Product name from MsiInstaller: the message or Param fields carry "Product: X -- ..."
+function productName(row: SplunkRow): string | undefined {
+  const direct = pick(row, 'Product_Name', 'Product', 'Name');
+  if (direct) return direct;
+  const msg = pick(row, 'Message', 'Param1', 'param1');
+  if (!msg) return undefined;
+  const m = msg.match(/Product:\s*([^-.\n]+?)(?:\s+--|\.|,|$)/i);
+  return m ? m[1].trim() : undefined;
+}
 
 export function normalizeRow(row: SplunkRow, index: number): NormalizedEvent | null {
   const timeStr = pick(row, '_time');
@@ -129,7 +168,9 @@ export function normalizeRow(row: SplunkRow, index: number): NormalizedEvent | n
     else if (code === '3') ev.category = 'network';
     else if (code === '11' || code === '23' || code === '26') { ev.category = 'file'; ev.filePath = pick(row, 'TargetFilename', 'file_path'); }
     else if (code === '22') { ev.category = 'dns'; ev.domain = pick(row, 'QueryName', 'query')?.toLowerCase(); }
-    else ev.category = 'other';
+    else if (code === '10') { ev.category = 'process_access'; ev.targetProcess = pick(row, 'TargetImage'); ev.process = pick(row, 'SourceImage', 'Image'); ev.message = `Opened ${basename(ev.targetProcess) || 'process'} (access ${pick(row, 'GrantedAccess') || '?'})`; }
+    else if (code === '12' || code === '13' || code === '14') { ev.category = 'registry'; ev.registryKey = pick(row, 'TargetObject', 'Target_Object'); ev.registryValue = pick(row, 'Details'); }
+    else { ev.category = 'generic'; ev.provider = 'Sysmon'; ev.logName = 'Sysmon'; ev.message = `Sysmon event ${code}`; }
     ev.outcome = 'success';
     return ev;
   }
@@ -149,6 +190,34 @@ export function normalizeRow(row: SplunkRow, index: number): NormalizedEvent | n
     // For group changes, the subject (first Account_Name) made the change; the target is the member.
     const names = vals(row, 'Account_Name');
     if (names.length >= 1) ev.user = bareUser(names[0]);
+  } else if (code && MSI_INSTALL_CODES.has(code)) {
+    ev.category = 'install'; ev.outcome = 'success';
+    ev.product = productName(row); ev.publisher = pick(row, 'Vendor', 'Publisher'); ev.version = pick(row, 'Version');
+    ev.message = `Installed ${ev.product || 'software'}`;
+  } else if (code && MSI_UNINSTALL_CODES.has(code)) {
+    ev.category = 'uninstall'; ev.outcome = 'success';
+    ev.product = productName(row); ev.message = `Removed ${ev.product || 'software'}`;
+  } else if (code && SERVICE_INSTALL_CODES.has(code)) {
+    ev.category = 'service'; ev.outcome = 'success';
+    ev.serviceName = pick(row, 'Service_Name', 'ServiceName'); ev.imagePath = pick(row, 'Service_File_Name', 'ImagePath', 'Image_Path');
+    ev.message = `Service installed: ${ev.serviceName || '?'}`;
+    if (code === '4697') { const names = vals(row, 'Account_Name'); if (names.length) ev.user = bareUser(names[0]); }
+  } else if (code && SCHEDULED_TASK_CODES.has(code)) {
+    ev.category = 'scheduled_task'; ev.outcome = 'success';
+    ev.taskName = pick(row, 'Task_Name', 'TaskName'); ev.imagePath = pick(row, 'ImagePath', 'Image_Path');
+    ev.message = `Scheduled task created: ${ev.taskName || '?'}`;
+  } else if (code && DEFENDER_CODES.has(code)) {
+    ev.category = 'defender'; ev.outcome = 'success';
+    ev.threat = pick(row, 'Threat_Name', 'ThreatName', 'signature'); ev.filePath = pick(row, 'file_path', 'Object_Name');
+    ev.signature = ev.threat; ev.message = `Defender: ${ev.threat || 'detection'}`;
+  } else if (code && LOCKOUT_CODES.has(code)) {
+    ev.category = 'lockout'; ev.outcome = 'failure';
+    ev.user = bareUser(pick(row, 'TargetUserName', 'Account_Name')); ev.message = 'Account locked out';
+  } else if (code && PRIVILEGE_CODES.has(code)) {
+    ev.category = 'privilege'; ev.outcome = 'success'; ev.message = 'Special privileges assigned to new logon';
+  } else if (code && CLEARED_LOG_CODES.has(code)) {
+    ev.category = 'generic'; ev.outcome = 'success'; ev.provider = 'Windows'; ev.logName = pick(row, 'sourcetype'); ev.message = 'Audit log was cleared';
+    ev.signature = 'Audit log cleared';
   } else if (code === '4663' || code === '5145') {
     ev.category = 'file';
     ev.outcome = 'success';
@@ -178,6 +247,18 @@ export function normalizeRow(row: SplunkRow, index: number): NormalizedEvent | n
   // Generic CIM authentication data (e.g. Okta, VPN, Linux secure) without Windows event codes.
   if (ev.category === 'other' && /auth|login|logon|secure|okta|signin|vpn/.test(sourcetype) && ev.outcome !== 'unknown') {
     ev.category = 'auth';
+  }
+  // Cloud sign-ins (M365 / Entra ID / AWS) surfaced through CIM or add-on sourcetypes
+  if (ev.category === 'other' && /azure|entra|office365|o365|aws|cloudtrail|gsuite|gws|okta/.test(sourcetype)) {
+    if (pick(row, 'signature') && /assumerole|consolelogin|createuser|attach/i.test(pick(row, 'signature') || '')) { ev.category = 'cloud_auth'; ev.message = pick(row, 'signature'); }
+    else if (ev.outcome !== 'unknown') { ev.category = 'cloud_auth'; ev.message = `Cloud sign-in (${sourcetype})`; }
+  }
+  // Nothing is dropped: anything still unmodelled becomes a generic event, kept for the graph and search.
+  if (ev.category === 'other') {
+    ev.category = 'generic';
+    ev.provider = pick(row, 'SourceName', 'sourcetype') || sourcetype;
+    ev.logName = sourcetype;
+    ev.message = ev.message || pick(row, 'signature', 'Message', 'action') || (code ? `Event ${code} (${sourcetype})` : sourcetype);
   }
   return ev;
 }
