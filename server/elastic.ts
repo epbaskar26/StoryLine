@@ -14,6 +14,7 @@ export interface ElasticConfig {
   timeoutMs: number;
   maxEvents: number;
   excludeProcs: string[]; // benign high-volume process names to drop at query time (denoise)
+  excludeCmdline: string[]; // benign command-line patterns (glob, * wildcard) to drop at query time
 }
 
 export function loadElasticConfig(env = process.env): ElasticConfig | null {
@@ -32,6 +33,10 @@ export function loadElasticConfig(env = process.env): ElasticConfig | null {
     // Denoise on by default: drop OS/UI process-creation spam so the event budget and graph focus on
     // meaningful activity. ELASTIC_DENOISE=false disables it; ELASTIC_EXCLUDE_PROCS adds names (comma-sep).
     excludeProcs: env.ELASTIC_DENOISE === 'false' ? [] : DEFAULT_NOISE_PROCS.concat((env.ELASTIC_EXCLUDE_PROCS || '').split(',').map(x => x.trim().toLowerCase()).filter(Boolean)),
+    // Command-line denoise: drop events whose process.command_line matches a benign pattern (e.g. "kubectl --help",
+    // "curl * localhost:9200"). Targets specific commands, so cmd/net/curl/powershell stay for everything else.
+    // '*' is a wildcard; each pattern is matched as a substring (auto-wrapped with * on both ends), case-insensitive.
+    excludeCmdline: env.ELASTIC_DENOISE === 'false' ? [] : (env.ELASTIC_EXCLUDE_CMDLINE || '').split(',').map(x => x.trim()).filter(Boolean),
   };
 }
 
@@ -47,10 +52,26 @@ const DEFAULT_NOISE_PROCS = [
   'securityhealthservice.exe', 'securityhealthsystray.exe', 'gamebar.exe', 'gamebarftserver.exe', 'crashpad_handler.exe',
 ];
 
-// Drop process-creation events for the noise list. Non-process events (no process.name) are never affected.
+// Wrap a user pattern so it matches anywhere in the command line: "kubectl --help" -> "*kubectl --help*".
+// An explicit '*' in the pattern is preserved ("curl * localhost:9200" -> "*curl * localhost:9200*").
+function toWildcard(pat: string): string {
+  let v = pat;
+  if (!v.startsWith('*')) v = '*' + v;
+  if (!v.endsWith('*')) v = v + '*';
+  return v;
+}
+
+// Drop process-creation events for the noise process names, and any event whose command line matches a
+// benign pattern. Non-process events (no process.name / no command line) are never affected — a must_not
+// clause only excludes docs that actually match it.
 function denoiseClause(cfg: ElasticConfig) {
-  if (!cfg.excludeProcs.length) return [];
-  return [{ bool: { must_not: [{ terms: { 'process.name': cfg.excludeProcs } }] } }];
+  const mustNot: unknown[] = [];
+  if (cfg.excludeProcs.length) mustNot.push({ terms: { 'process.name': cfg.excludeProcs } });
+  for (const pat of cfg.excludeCmdline) {
+    mustNot.push({ wildcard: { 'process.command_line': { value: toWildcard(pat), case_insensitive: true } } });
+  }
+  if (!mustNot.length) return [];
+  return [{ bool: { must_not: mustNot } }];
 }
 
 function request(cfg: ElasticConfig, method: string, path: string, body?: unknown): Promise<any> {
