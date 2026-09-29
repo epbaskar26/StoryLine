@@ -2,6 +2,13 @@
 
 Identity-centric investigation tool for SOC analysts: pick a user, and WatchMe builds a graph of what that identity touched over the last 48 hours (or 7 days), scores it with explainable risk indicators, replays it on a timeline, exports the replay as video evidence, and writes a case summary.
 
+# Problem Statement: 
+
+Security Operations Centers (SOCs) collect vast amounts of endpoint, identity, and cloud telemetry, but analysts still manually correlate events across SIEM, EDR, and identity platforms to understand an incident. This process is time-consuming, inconsistent, and highly dependent on analyst expertise, resulting in delayed investigations and fragmented evidence.
+Existing SIEM and UEBA solutions provide alerts and risk scores, but they lack a clear, end-to-end narrative of an identity's activity.
+
+StoryLine solves this by automatically reconstructing identity activity into an interactive attack-path timeline, generating a cited AI-driven incident narrative with MITRE ATT&CK mapping, and providing timeline replay and evidence export. It transforms scattered logs into a clear, reviewable story in minutes instead of hours.
+
 ## Quick start (demo data, no setup)
 
 Prerequisite: Node.js 20 or later (Vite 6 is used so older Node 20 releases work).
