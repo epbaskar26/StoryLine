@@ -1,4 +1,4 @@
-# WatchMe
+# StoryLine
 
 Identity-centric investigation tool for SOC analysts: pick a user, and WatchMe builds a graph of what that identity touched over the last 48 hours (or 7 days), scores it with explainable risk indicators, replays it on a timeline, exports the replay as video evidence, and writes a case summary.
 
